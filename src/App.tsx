@@ -33,6 +33,11 @@ import {
   ScoringLog
 } from './types';
 
+// Firebase core modules and handles
+import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { auth, db, googleProvider, signInWithPopup, signOut, handleFirestoreError, OperationType } from './firebase';
+
 const STORAGE_KEYS = {
   STATS: 'cricket_career_stats',
   DISMISSALS: 'cricket_dismissals',
@@ -89,12 +94,168 @@ export default function App() {
   const [redoStack, setRedoStack] = useState<StateSnapshot[]>([]);
   const [notification, setNotification] = useState<string | null>(null);
 
+  // Authentication & Cloud Synchronization State
+  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [isLoadedFromCloud, setIsLoadedFromCloud] = useState(false);
+  const [isGuestMode, setIsGuestMode] = useState(() => {
+    return localStorage.getItem('crick_guest_mode') === 'true';
+  });
+
+  // Track guest mode state
+  useEffect(() => {
+    localStorage.setItem('crick_guest_mode', String(isGuestMode));
+  }, [isGuestMode]);
+
+  // Auth listener & Cloud DB Hydrator
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      setUser(currentUser);
+      setAuthLoading(false);
+      
+      if (currentUser) {
+        setIsLoadedFromCloud(false);
+        try {
+          const matchDocRef = doc(db, 'users', currentUser.uid, 'matches', 'current');
+          const docSnap = await getDoc(matchDocRef);
+          
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            if (data.players) setPlayers(data.players);
+            if (data.careerStats) setCareerStats(sanitizeCareerStats(data.careerStats));
+            if (data.sessionStats) setSessionStats(sanitizeSessionStats(data.sessionStats));
+            if (data.dismissals) setDismissals(data.dismissals);
+            if (data.match) setMatch(sanitizeMatchState(data.match));
+            if (data.manualEditLogs) setManualEditLogs(data.manualEditLogs);
+            if (data.undoStack) setUndoStack(data.undoStack);
+            if (data.redoStack) setRedoStack(data.redoStack);
+            setNotification("Cloud Scores Synchronized");
+          } else {
+            // First run, push the existing local storage / initialized state into cloud
+            await setDoc(matchDocRef, {
+              userId: currentUser.uid,
+              updatedAt: new Date().toISOString(),
+              match: sanitizeMatchState(match),
+              sessionStats: sanitizeSessionStats(sessionStats),
+              careerStats: sanitizeCareerStats(careerStats),
+              players: players,
+              dismissals: dismissals,
+              manualEditLogs: manualEditLogs,
+              undoStack: undoStack,
+              redoStack: redoStack
+            });
+            setNotification("Cloud Snapshot Created");
+          }
+        } catch (error) {
+          console.error("Firestore retrieval error:", error);
+          setNotification("Running locally (Cached config)");
+        } finally {
+          setIsLoadedFromCloud(true);
+        }
+      } else {
+        setIsLoadedFromCloud(false);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // Debounced continuous synchronization to Cloud Firestore
+  useEffect(() => {
+    if (!user || !isLoadedFromCloud) return;
+
+    const timer = setTimeout(async () => {
+      try {
+        const matchDocRef = doc(db, 'users', user.uid, 'matches', 'current');
+        await setDoc(matchDocRef, {
+          userId: user.uid,
+          updatedAt: new Date().toISOString(),
+          match: sanitizeMatchState(match),
+          sessionStats: sanitizeSessionStats(sessionStats),
+          careerStats: sanitizeCareerStats(careerStats),
+          players: players,
+          dismissals: dismissals,
+          manualEditLogs: manualEditLogs,
+          undoStack: undoStack.slice(-10), 
+          redoStack: redoStack.slice(-10)
+        });
+        console.log("Match autosaved to cloud");
+      } catch (error) {
+        console.warn("Firestore queued update offline:", error);
+      }
+    }, 1200);
+
+    return () => clearTimeout(timer);
+  }, [match, sessionStats, careerStats, players, dismissals, manualEditLogs, user, isLoadedFromCloud]);
+
+  const handleGoogleLogin = async () => {
+    try {
+      const result = await signInWithPopup(auth, googleProvider);
+      const u = result.user;
+      
+      await setDoc(doc(db, 'users', u.uid), {
+        uid: u.uid,
+        email: u.email || '',
+        displayName: u.displayName || '',
+        photoURL: u.photoURL || '',
+        updatedAt: new Date().toISOString()
+      });
+      
+      setIsGuestMode(false);
+      setNotification(`Logged in as ${u.displayName}`);
+    } catch (error) {
+      console.error("Failed Google Login", error);
+      setNotification("Sign in failed");
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      setUser(null);
+      setIsGuestMode(false);
+      setIsLoadedFromCloud(false);
+      
+      // Clear local states
+      setPlayers(INITIAL_PLAYERS);
+      setCareerStats(INITIAL_STATS);
+      setSessionStats({});
+      setDismissals([]);
+      setMatch({
+        strikerId: 1,
+        nonStrikerId: 2,
+        bowlerId: 3,
+        overBalls: 0,
+        currentOver: [],
+        totalRuns: 0,
+        totalWickets: 0,
+        extras: 0,
+      });
+      setManualEditLogs([]);
+      setUndoStack([]);
+      setRedoStack([]);
+      
+      // Clean local storage
+      localStorage.removeItem(STORAGE_KEYS.STATS);
+      localStorage.removeItem(STORAGE_KEYS.DISMISSALS);
+      localStorage.removeItem(STORAGE_KEYS.MATCH);
+      localStorage.removeItem(STORAGE_KEYS.PLAYERS);
+      localStorage.removeItem(STORAGE_KEYS.LOGS);
+      localStorage.removeItem('crick_guest_mode');
+      
+      setNotification("Session logged out");
+    } catch (error) {
+      console.error("Logout trigger failed", error);
+    }
+  };
+
   useEffect(() => {
     if (notification) {
       const timer = setTimeout(() => setNotification(null), 2000);
       return () => clearTimeout(timer);
     }
   }, [notification]);
+
 
   // Deep clone utility for strict state immutability
   const deepClone = <T,>(obj: T): T => {
@@ -257,6 +418,9 @@ export default function App() {
 
   // Persistence
   useEffect(() => {
+    // If a signed-in user is authenticated, skip reloading local storage and let Cloud handle hydration
+    if (auth.currentUser) return;
+
     const savedStats = localStorage.getItem(STORAGE_KEYS.STATS);
     const savedDismissals = localStorage.getItem(STORAGE_KEYS.DISMISSALS);
     const savedMatch = localStorage.getItem(STORAGE_KEYS.MATCH);
@@ -1359,6 +1523,85 @@ export default function App() {
     setNotification('Career report successfully exported as cricket_career_report.html!');
   };
 
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-[#151619] flex items-center justify-center font-sans">
+        <div className="text-center space-y-4">
+          <div className="w-16 h-16 border-4 border-orange-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
+          <p className="text-gray-400 font-mono text-xs uppercase tracking-widest animate-pulse">Initializing Environment...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user && !isGuestMode) {
+    return (
+      <div className="min-h-screen bg-[#151619] flex items-center justify-center p-6 text-white font-sans selection:bg-orange-500/30">
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="w-full max-w-md bg-[#1a1b1e] border-2 border-white/5 p-8 rounded-3xl shadow-2xl relative overflow-hidden"
+        >
+          {/* Decorative accents */}
+          <div className="absolute -top-12 -right-12 w-32 h-32 bg-orange-500/10 rounded-full blur-3xl"></div>
+          <div className="absolute -bottom-12 -left-12 w-32 h-32 bg-orange-500/5 rounded-full blur-3xl"></div>
+
+          <div className="flex flex-col items-center text-center space-y-6 relative z-10">
+            <div className="w-16 h-16 bg-gradient-to-br from-orange-500 to-[#FF6B00] rounded-2xl flex items-center justify-center shadow-lg shadow-orange-500/10 border border-orange-500/30">
+              <Trophy size={32} className="text-black" />
+            </div>
+
+            <div className="space-y-2">
+              <h1 className="text-3xl font-extrabold uppercase tracking-tighter text-white font-mono">
+                CrickScore
+              </h1>
+              <p className="text-[10px] uppercase font-mono text-orange-500 tracking-[0.2em] font-bold">
+                Infinite Loop Scorer
+              </p>
+              <p className="text-xs text-gray-400 font-mono max-w-xs pt-2 leading-relaxed">
+                Cloud-backed session statistics, career profiles, milestones, and offline capability.
+              </p>
+            </div>
+
+            <div className="w-full pt-4 space-y-3">
+              <button
+                onClick={handleGoogleLogin}
+                className="w-full flex items-center justify-center gap-3 py-4 px-6 bg-[#25262b] hover:bg-[#2c2d33] border border-orange-500/50 hover:border-orange-500 text-white font-bold font-mono uppercase text-xs tracking-wider rounded-2xl transition-all shadow-lg active:scale-[0.98] cursor-pointer"
+              >
+                <svg className="w-4 h-4" viewBox="0 0 24 24">
+                  <path fill="#EA4335" d="M12.24 10.285V14.4h6.887c-.275 1.564-1.859 4.604-6.887 4.604-4.337 0-7.874-3.59-7.874-8s3.537-8 7.874-8c2.467 0 4.12 1.025 5.064 1.93l3.245-3.13C18.375 1.914 15.545 1 12.24 1A10.974 10.974 0 0 0 1.25 12a10.974 10.974 0 0 0 10.99 11c5.73 0 11.25-4.04 11.25-11.25 0-.765-.082-1.343-.225-1.742H12.24z"/>
+                </svg>
+                Continue with Google
+              </button>
+
+              <button
+                onClick={() => {
+                  setIsGuestMode(true);
+                  setNotification("Entered Guest Mode");
+                }}
+                className="w-full py-4 px-6 bg-transparent hover:bg-white/5 border border-white/10 text-gray-400 hover:text-white font-mono uppercase text-[10px] tracking-widest rounded-2xl transition-all active:scale-[0.98] cursor-pointer"
+              >
+                Use Offline Guest Mode
+              </button>
+            </div>
+
+            <div className="pt-4 border-t border-white/5 w-full text-[9px] font-mono text-gray-500 flex justify-between uppercase">
+              <span>⚡ PWA Offline Cache</span>
+              <span>🔒 Cloud Desync Guard</span>
+            </div>
+          </div>
+        </motion.div>
+
+        {/* Global Floating alert notifications block so that offline modes still render hints */}
+        {notification && (
+          <div className="fixed bottom-6 left-1/2 transform -translate-x-1/2 z-[200] bg-orange-500/90 backdrop-blur border border-orange-400 text-black font-mono text-[10px] px-4 py-2 rounded-full uppercase tracking-wider font-bold shadow-2xl">
+            {notification}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#151619] text-white font-sans selection:bg-orange-500/30">
       {/* Navigation */}
@@ -1394,6 +1637,49 @@ export default function App() {
       </nav>
 
       <main className="pb-24 pt-8 px-4 max-w-lg mx-auto">
+        {/* User bar / Connection status */}
+        <div className="flex justify-between items-center bg-[#1a1b1e] border border-white/5 rounded-2xl px-4 py-3 mb-6 font-mono text-xs text-gray-400">
+          {user ? (
+            <div className="flex items-center justify-between w-full">
+              <div className="flex items-center gap-2">
+                {user.photoURL ? (
+                  <img src={user.photoURL} alt="" className="w-6 h-6 rounded-full border border-orange-500/30 object-cover" referrerPolicy="no-referrer" />
+                ) : (
+                  <div className="w-6 h-6 rounded-full bg-orange-500/20 text-orange-400 flex items-center justify-center text-[10px] font-bold">
+                    {user.displayName?.charAt(0).toUpperCase() || 'U'}
+                  </div>
+                )}
+                <span className="text-white font-bold max-w-[120px] truncate text-[11px]">{user.displayName}</span>
+                <span className="text-[8px] bg-green-500/10 text-green-400 px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold">Synced</span>
+              </div>
+              <button 
+                onClick={handleLogout}
+                className="text-[10px] text-red-400 hover:text-red-300 uppercase tracking-widest font-bold underline cursor-pointer"
+              >
+                Logout
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between w-full">
+              <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-amber-500 font-bold">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                </span>
+                Local Guest
+              </div>
+              <button 
+                onClick={() => {
+                  setIsGuestMode(false);
+                  setUser(null);
+                }}
+                className="text-[10px] text-orange-500 hover:text-orange-400 uppercase tracking-widest font-bold flex items-center gap-1 bg-orange-500/10 border border-orange-500/30 px-3 py-1 rounded-lg hover:bg-orange-500/20 transition-all cursor-pointer"
+              >
+                Backup on Cloud
+              </button>
+            </div>
+          )}
+        </div>
         {/* Header Stat */}
         <div className="flex justify-between items-center mb-8 border-b border-white/5 pb-4">
           <div className="flex items-center gap-3">

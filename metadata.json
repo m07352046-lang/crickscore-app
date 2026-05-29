@@ -2,5 +2,5 @@
   "name": "Infinite Loop Cricket Scorer",
   "description": "A continuous cricket scoring app for 7 players with lifetime career stats, head-to-head records, and strike rotation logic.",
   "requestFramePermissions": [],
-  "majorCapabilities": []
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
