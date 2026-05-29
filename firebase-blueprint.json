@@ -1,0 +1,45 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile with credentials from Google Authentication",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "The unique user ID" },
+        "email": { "type": "string", "description": "User email address" },
+        "displayName": { "type": "string", "description": "User display name" },
+        "photoURL": { "type": "string", "description": "Google user avatar URL" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "User updated timestamp" }
+      },
+      "required": ["uid", "email", "displayName", "updatedAt"]
+    },
+    "CricketMatchState": {
+      "title": "CricketMatchState",
+      "description": "Live match state database schema with entire database snapshot",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner userID" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Update timestamp" },
+        "match": { "type": "object", "description": "Standard match state" },
+        "sessionStats": { "type": "object", "description": "Session batsman & bowler stats" },
+        "careerStats": { "type": "object", "description": "Interactive career scorecard stats" },
+        "players": { "type": "array", "description": "List of active players" },
+        "dismissals": { "type": "array", "description": "Record of dismissals" },
+        "manualEditLogs": { "type": "array", "description": "Log records of manual adjustments" },
+        "undoStack": { "type": "array", "description": "History stack for undo" },
+        "redoStack": { "type": "array", "description": "History stack for redo" }
+      },
+      "required": ["userId", "updatedAt", "match", "sessionStats", "careerStats", "players"]
+    }
+  },
+  "firestore": {
+    "/users": {
+      "schema": "UserProfile",
+      "description": "User profiles storing login details"
+    },
+    "/users/{userId}/matches": {
+      "schema": "CricketMatchState",
+      "description": "Current active match state document with ID 'current' for the authenticated user"
+    }
+  }
+}
