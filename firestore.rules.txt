@@ -1,0 +1,59 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper: Is user signed in and verified via Google Auth
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    // Helper: Valid ID checks
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Global Safety Net default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Validation Blueprint for User Profiles
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'photoURL', 'updatedAt'])
+        && data.keys().size() == 5
+        && data.uid == request.auth.uid
+        && data.email is string && data.email.size() <= 256
+        && data.displayName is string && data.displayName.size() <= 128
+        && data.photoURL is string && data.photoURL.size() <= 1024;
+    }
+
+    // Match User Profile document
+    match /users/{userId} {
+      allow read: if isSignedIn() && userId == request.auth.uid;
+      allow create, update: if isSignedIn() && userId == request.auth.uid && isValidUserProfile(request.resource.data);
+      allow delete: if false;
+    }
+
+    // Validation Blueprint for Cricket Tournament Match states
+    function isValidCricketMatchState(data) {
+      return data.keys().hasAll(['userId', 'updatedAt', 'match', 'sessionStats', 'careerStats', 'players', 'dismissals', 'manualEditLogs', 'undoStack', 'redoStack'])
+        && data.keys().size() == 10
+        && data.userId == request.auth.uid
+        && data.players is list && data.players.size() <= 100
+        && data.dismissals is list && data.dismissals.size() <= 1000
+        && data.manualEditLogs is list && data.manualEditLogs.size() <= 1000
+        && data.undoStack is list && data.undoStack.size() <= 15
+        && data.redoStack is list && data.redoStack.size() <= 15
+        && data.match is map
+        && data.sessionStats is map
+        && data.careerStats is map;
+    }
+
+    // Match CricketMatchState document (Always ID 'current' under users matches collection)
+    match /users/{userId}/matches/{matchId} {
+      allow read: if isSignedIn() && userId == request.auth.uid;
+      allow create, update: if isSignedIn() && userId == request.auth.uid && isValidId(matchId) && isValidCricketMatchState(request.resource.data);
+      allow delete: if isSignedIn() && userId == request.auth.uid;
+    }
+  }
+}
