@@ -51,8 +51,8 @@ export default function App() {
   const [players, setPlayers] = useState<Player[]>(INITIAL_PLAYERS);
   const [careerStats, setCareerStats] = useState<Record<number, CareerStats>>(INITIAL_STATS);
   const [sessionStats, setSessionStats] = useState<Record<number, { 
-    batting: { runs: number; balls: number }; 
-    bowling: { runs: number; balls: number; wickets: number };
+    batting: { runs: number; balls: number; inningsCounted?: boolean | number; // }; 
+    bowling: { runs: number; balls: number; wickets: number; inningsCounted?: boolean | number; //};
   }>>({});
   const [dismissals, setDismissals] = useState<DismissalRecord[]>([]);
   const [manualEditLogs, setManualEditLogs] = useState<ManualEditLog[]>([]);
