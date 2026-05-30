@@ -51,8 +51,8 @@ export default function App() {
   const [players, setPlayers] = useState<Player[]>(INITIAL_PLAYERS);
   const [careerStats, setCareerStats] = useState<Record<number, CareerStats>>(INITIAL_STATS);
   const [sessionStats, setSessionStats] = useState<Record<number, { 
-    batting: { runs: number; balls: number; inningsCounted?: boolean | number; // }; 
-    bowling: { runs: number; balls: number; wickets: number; inningsCounted?: boolean | number; //};
+    batting: { runs: number; balls: number; inningsCounted?: boolean; }; 
+    bowling: { runs: number; balls: number; wickets: number; inningsCounted?: boolean; };
   }>>({});
   const [dismissals, setDismissals] = useState<DismissalRecord[]>([]);
   const [manualEditLogs, setManualEditLogs] = useState<ManualEditLog[]>([]);
@@ -1417,7 +1417,7 @@ export default function App() {
         <!-- Actions Row for PDF download / Printing -->
         <div class="no-print flex justify-between items-center bg-white/5 border border-white/10 p-4 rounded-xl shadow-lg">
             <span class="text-xs text-gray-400 uppercase font-mono tracking-wider">📄 Offline Career Statistics Report</span>
-            <button onclick="window.print()" class="flex items-center gap-2 py-2 px-5 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-black font-bold uppercase text-[11px] tracking-wider rounded-lg shadow-lg transition-all active:scale-95 duration-200">
+            <button onclick="window.print()" class="flex items-center gap-2 py-2 px-5 bg-linear-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-black font-bold uppercase text-[11px] tracking-wider rounded-lg shadow-lg transition-all active:scale-95 duration-200">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path></svg>
                 Print / Save as PDF
             </button>
@@ -1547,7 +1547,7 @@ export default function App() {
           <div className="absolute -bottom-12 -left-12 w-32 h-32 bg-orange-500/5 rounded-full blur-3xl"></div>
 
           <div className="flex flex-col items-center text-center space-y-6 relative z-10">
-            <div className="w-16 h-16 bg-gradient-to-br from-orange-500 to-[#FF6B00] rounded-2xl flex items-center justify-center shadow-lg shadow-orange-500/10 border border-orange-500/30">
+            <div className="w-16 h-16 bg-gradientlinear-to-br from-orange-500 to-[#FF6B00] rounded-2xl flex items-center justify-center shadow-lg shadow-orange-500/10 border border-orange-500/30">
               <Trophy size={32} className="text-black" />
             </div>
 
@@ -1594,7 +1594,7 @@ export default function App() {
 
         {/* Global Floating alert notifications block so that offline modes still render hints */}
         {notification && (
-          <div className="fixed bottom-6 left-1/2 transform -translate-x-1/2 z-[200] bg-orange-500/90 backdrop-blur border border-orange-400 text-black font-mono text-[10px] px-4 py-2 rounded-full uppercase tracking-wider font-bold shadow-2xl">
+          <div className="fixed bottom-6 left-1/2 transform -translate-x-1/2 z-200 bg-orange-500/90 backdrop-blur border border-orange-400 text-black font-mono text-[10px] px-4 py-2 rounded-full uppercase tracking-wider font-bold shadow-2xl">
             {notification}
           </div>
         )}
@@ -1649,7 +1649,7 @@ export default function App() {
                     {user.displayName?.charAt(0).toUpperCase() || 'U'}
                   </div>
                 )}
-                <span className="text-white font-bold max-w-[120px] truncate text-[11px]">{user.displayName}</span>
+                <span className="text-white font-bold max-w-120px truncate text-[11px]">{user.displayName}</span>
                 <span className="text-[8px] bg-green-500/10 text-green-400 px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold">Synced</span>
               </div>
               <button 
@@ -1752,7 +1752,7 @@ export default function App() {
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: 20 }}
-                  className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-orange-500 text-black px-6 py-3 rounded-full font-mono text-xs uppercase tracking-widest shadow-2xl z-[100] flex items-center gap-2"
+                  className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-orange-500 text-black px-6 py-3 rounded-full font-mono text-xs uppercase tracking-widest shadow-2xl z-100 flex items-center gap-2"
                 >
                   <AlertCircle size={14} />
                   {notification}
@@ -1773,7 +1773,7 @@ export default function App() {
                 >
                   <div className="flex justify-between items-start mb-4">
                     <div className="flex gap-4 flex-1">
-                      <div className="w-12 h-12 rounded-full overflow-hidden bg-white/10 border border-white/5 flex-shrink-0">
+                      <div className="w-12 h-12 rounded-full overflow-hidden bg-white/10 border border-white/5 shrink-0">
                         {players.find(p => p.id === bat.id)?.avatar ? (
                           <img src={players.find(p => p.id === bat.id)?.avatar} alt="avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                         ) : (
@@ -1787,6 +1787,8 @@ export default function App() {
                           {bat.label}
                         </span>
                         <select 
+                          aria-label="Select Player"
+                          title='Select Player'
                           value={bat.id}
                           onChange={(e) => setMatch(prev => ({ ...prev, [bat.key]: Number(e.target.value) }))}
                           className={`text-2xl font-mono tracking-tight bg-transparent border-none focus:ring-0 w-full appearance-none p-0 cursor-pointer ${bat.id === 0 ? 'text-gray-500 italic' : 'text-white'}`}
@@ -1866,7 +1868,7 @@ export default function App() {
             <div className="p-6 rounded-xl border border-dashed border-white/20 bg-white/5">
               <div className="flex justify-between items-center mb-6">
                 <div className="flex gap-4 flex-1">
-                  <div className="w-12 h-12 rounded-full overflow-hidden bg-white/10 border border-white/5 flex-shrink-0">
+                  <div className="w-12 h-12 rounded-full overflow-hidden bg-white/10 border border-white/5 shrink-0">
                     {players.find(p => p.id === match.bowlerId)?.avatar ? (
                       <img src={players.find(p => p.id === match.bowlerId)?.avatar} alt="avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                     ) : (
@@ -1878,6 +1880,7 @@ export default function App() {
                   <div className="flex-1">
                     <span className="text-[10px] uppercase font-mono text-gray-500 tracking-widest mb-1 block">Current Bowler</span>
                     <select 
+                      aria-label='Select Player'
                       value={match.bowlerId}
                       onChange={(e) => setMatch(prev => ({ ...prev, bowlerId: Number(e.target.value) }))}
                       className="text-xl font-mono bg-transparent border-none focus:ring-0 w-full appearance-none text-white p-0 cursor-pointer"
@@ -1925,7 +1928,7 @@ export default function App() {
 
               <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none">
                 {match.currentOver.map((ball, i) => (
-                  <div key={i} className={`min-w-[40px] h-10 px-1 flex items-center justify-center rounded-full font-mono text-sm ${
+                  <div key={i} className={`min-w-40px h-10 px-1 flex items-center justify-center rounded-full font-mono text-sm ${
                     (ball === 'W' || (typeof ball === 'string' && ball.includes('W'))) ? 'bg-red-500/20 text-red-400 border border-red-500/30 font-bold' :
                     (typeof ball === 'string' && (ball.includes('wd') || ball.includes('NB'))) ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' :
                     'bg-white/10 text-white'
@@ -1936,7 +1939,7 @@ export default function App() {
                 {(() => {
                   const legalBalls = match.currentOver.filter(b => typeof b === 'number' || b === 'W' || (typeof b === 'string' && b.includes('+W'))).length;
                   return Array.from({ length: Math.max(0, 6 - legalBalls) }).map((_, i) => (
-                    <div key={i} className="min-w-[40px] h-10 flex items-center justify-center border border-dashed border-white/10 rounded-full font-mono text-sm text-white/20">
+                    <div key={i} className="min-w-40px h-10 flex items-center justify-center border border-dashed border-white/10 rounded-full font-mono text-sm text-white/20">
                       •
                     </div>
                   ));
@@ -1960,7 +1963,7 @@ export default function App() {
               <button
                 id="export-career-data-btn"
                 onClick={handleDownloadCareerHTML}
-                className="flex items-center justify-center gap-2 py-2.5 px-5 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 border border-orange-400/20 text-black font-semibold rounded-xl text-xs transition-all tracking-wider uppercase shadow-lg shadow-orange-500/10 active:scale-95 duration-200"
+                className="flex items-center justify-center gap-2 py-2.5 px-5 bg-gradientlinear-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 border border-orange-400/20 text-black font-semibold rounded-xl text-xs transition-all tracking-wider uppercase shadow-lg shadow-orange-500/10 active:scale-95 duration-200"
               >
                 <Download size={14} />
                 <span>Export Career Report</span>
@@ -1994,9 +1997,9 @@ export default function App() {
                       const sr = s.ballsFaced > 0 ? (s.runs / s.ballsFaced) * 100 : 0;
                       return (
                         <tr key={p.id} className="border-b border-white/5 hover:bg-white/5 group">
-                          <td className="p-3 font-medium text-white max-w-[120px]">
+                          <td className="p-3 font-medium text-white max-w-120px">
                             <div className="flex items-center gap-3">
-                              <div className="w-8 h-8 rounded-full bg-white/10 overflow-hidden flex-shrink-0 border border-white/5">
+                              <div className="w-8 h-8 rounded-full bg-white/10 overflow-hidden shrink-0 border border-white/5">
                                 {p.avatar ? (
                                   <img src={p.avatar} alt={p.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                                 ) : (
@@ -2059,9 +2062,9 @@ export default function App() {
                       const eco = s.ballsBowled > 0 ? (s.runsConceded / s.ballsBowled) * 6 : 0;
                       return (
                         <tr key={p.id} className="border-b border-white/5 hover:bg-white/5 group">
-                          <td className="p-3 font-medium text-white max-w-[120px]">
+                          <td className="p-3 font-medium text-white max-w-120px">
                             <div className="flex items-center gap-3">
-                              <div className="w-8 h-8 rounded-full bg-white/10 overflow-hidden flex-shrink-0 border border-white/5">
+                              <div className="w-8 h-8 rounded-full bg-white/10 overflow-hidden shrink-0 border border-white/5">
                                 {p.avatar ? (
                                   <img src={p.avatar} alt={p.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                                 ) : (
@@ -2107,7 +2110,7 @@ export default function App() {
               
               {players.map(p => (
                 <div key={p.id} className="p-6 bg-white/5 border border-white/10 rounded-2xl flex items-start gap-4">
-                  <div className="w-16 h-16 rounded-full overflow-hidden bg-white/10 border border-white/5 flex-shrink-0">
+                  <div className="w-16 h-16 rounded-full overflow-hidden bg-white/10 border border-white/5 shrink-0">
                     {p.avatar ? (
                       <img src={p.avatar} alt={p.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                     ) : (
@@ -2188,7 +2191,8 @@ export default function App() {
                       <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center rounded-full transition-opacity">
                         <Camera size={14} className="text-white" />
                       </div>
-                      <input 
+                      <input
+                        aria-label='Upload Player Avatar'
                         type="file"
                         id={`avatar-input-${p.id}`}
                         className="hidden"
@@ -2229,7 +2233,7 @@ export default function App() {
                 <h2 className="text-xl font-mono uppercase tracking-widest flex items-center gap-2">
                   <History size={20} className="text-blue-400" /> Career Edit Logs
                 </h2>
-                <div className="space-y-2 max-h-[400px] overflow-y-auto pr-2 scrollbar-thin">
+                <div className="space-y-2 max-h-400px overflow-y-auto pr-2 scrollbar-thin">
                   {manualEditLogs.slice().reverse().map(log => (
                     <div key={log.id} className="p-4 bg-white/5 border border-white/10 rounded-xl font-mono text-[10px]">
                       <div className="flex justify-between text-gray-500 mb-1">
@@ -2263,7 +2267,7 @@ export default function App() {
       {/* Modals */}
       <AnimatePresence>
         {dismissalModal.isOpen && (
-          <div className="fixed inset-0 bg-black/90 backdrop-blur-md z-[110] flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/90 backdrop-blur-md z-110 flex items-center justify-center p-4">
             <motion.div 
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
@@ -2309,7 +2313,7 @@ export default function App() {
         )}
 
         {runOutModal.isOpen && (
-          <div className="fixed inset-0 bg-black/95 backdrop-blur-md z-[115] flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/95 backdrop-blur-md z-115 flex items-center justify-center p-4">
             <motion.div 
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
@@ -2351,7 +2355,7 @@ export default function App() {
         )}
 
         {isWicketModalOpen.isOpen && (
-          <div className="fixed inset-0 bg-black/90 backdrop-blur-md z-[110] flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/90 backdrop-blur-md z-110 flex items-center justify-center p-4">
             <motion.div 
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
@@ -2366,7 +2370,7 @@ export default function App() {
                 {players.find(p => p.id === isWicketModalOpen.outPlayerId)?.name} is Wicket!. 
                 Record has been committed to career stats. Select replacement:
               </p>
-              <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 scrollbar-thin">
+              <div className="space-y-3 max-h-400px overflow-y-auto pr-2 scrollbar-thin">
                 {players
                   .filter(p => p.id !== match.strikerId && p.id !== match.nonStrikerId && p.id !== isWicketModalOpen.outPlayerId)
                   .map(p => (
@@ -2376,7 +2380,7 @@ export default function App() {
                       className="w-full p-4 bg-white/5 hover:bg-white/10 border border-white/5 rounded-2xl font-mono text-left transition-all flex items-center justify-between group"
                     >
                       <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-full bg-white/5 overflow-hidden flex-shrink-0 border border-white/5">
+                        <div className="w-10 h-10 rounded-full bg-white/5 overflow-hidden shrink-0 border border-white/5">
                           {p.avatar ? (
                             <img src={p.avatar} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                           ) : (
@@ -2399,7 +2403,7 @@ export default function App() {
         )}
 
         {isBowlerModalOpen && (
-          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-100 flex items-center justify-center p-4">
             <motion.div 
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
@@ -2427,7 +2431,7 @@ export default function App() {
         )}
 
         {editModal?.isOpen && (
-          <div className="fixed inset-0 bg-black/90 backdrop-blur-md z-[110] flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/90 backdrop-blur-md z-110 flex items-center justify-center p-4">
             <motion.div 
               initial={{ y: 50, opacity: 0 }}
               animate={{ y: 0, opacity: 1 }}
@@ -2481,6 +2485,7 @@ export default function App() {
                       </span>
                     </label>
                     <input 
+                      aria-label={'Edit ${key}'} 
                       type={key === 'name' ? 'text' : 'number'}
                       value={value}
                       onChange={(e) => setEditForm(prev => ({ ...prev, [key]: key === 'name' ? e.target.value : Number(e.target.value) }))}
