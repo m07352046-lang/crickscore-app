@@ -8,7 +8,7 @@
 
 @layer base {
   body {
-    @apply bg-[#151619] text-white;
+    @apply bg-[#05071C] text-slate-100;
     font-feature-settings: "ss01", "ss02", "cv01", "cv02";
   }
 }

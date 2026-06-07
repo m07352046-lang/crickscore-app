@@ -30,6 +30,20 @@
         "redoStack": { "type": "array", "description": "History stack for redo" }
       },
       "required": ["userId", "updatedAt", "match", "sessionStats", "careerStats", "players"]
+    },
+    "PlayerProfileWithStats": {
+      "title": "PlayerProfileWithStats",
+      "description": "Individual player profile details and manually synced career/fielding statistics",
+      "type": "object",
+      "properties": {
+        "id": { "type": "integer", "description": "Unique Player numerical identifier" },
+        "name": { "type": "string", "description": "Player complete display name" },
+        "jerseyNo": { "type": "integer", "description": "Player jersey number if defined" },
+        "dob": { "type": "string", "description": "Date of Birth if defined" },
+        "careerStats": { "type": "object", "description": "Sanitized individual career statistics object" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Record update timestamp" }
+      },
+      "required": ["id", "name", "careerStats", "updatedAt"]
     }
   },
   "firestore": {
@@ -40,6 +54,10 @@
     "/users/{userId}/matches": {
       "schema": "CricketMatchState",
       "description": "Current active match state document with ID 'current' for the authenticated user"
+    },
+    "/users/{userId}/players/{playerId}": {
+      "schema": "PlayerProfileWithStats",
+      "description": "Manually saved details and snapshot metrics of an individual player"
     }
   }
 }

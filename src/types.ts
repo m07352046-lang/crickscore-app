@@ -7,6 +7,8 @@ export interface Player {
   id: number;
   name: string;
   avatar?: string;
+  jerseyNo?: number;
+  dob?: string;
 }
 
 export interface CareerStats {
@@ -26,6 +28,15 @@ export interface CareerStats {
   hatTricks: number;
   wicketStreak: number;
   bestBowling: { wickets: number; runs: number };
+  catches?: number;
+  runOuts?: number;
+  throwComplete?: number;
+  stumpings?: number;
+  notOuts?: number;
+  innings?: number;
+  catchDrop?: number;
+  missField?: number;
+  missedThrows?: number;
 }
 
 export interface ScoringLog {
@@ -98,13 +109,13 @@ export interface StateSnapshot {
 }
 
 export const INITIAL_PLAYERS: Player[] = [
-  { id: 1, name: "Player 1" },
-  { id: 2, name: "Player 2" },
-  { id: 3, name: "Player 3" },
-  { id: 4, name: "Player 4" },
-  { id: 5, name: "Player 5" },
-  { id: 6, name: "Player 6" },
-  { id: 7, name: "Player 7" },
+  { id: 1, name: "Player 1", jerseyNo: 7, dob: "1997-04-12" },
+  { id: 2, name: "Player 2", jerseyNo: 18, dob: "1988-11-05" },
+  { id: 3, name: "Player 3", jerseyNo: 45, dob: "1987-04-30" },
+  { id: 4, name: "Player 4", jerseyNo: 10, dob: "1999-07-18" },
+  { id: 5, name: "Player 5", jerseyNo: 8, dob: "2001-02-28" },
+  { id: 6, name: "Player 6", jerseyNo: 12, dob: "1996-09-09" },
+  { id: 7, name: "Player 7", jerseyNo: 33, dob: "2002-05-15" },
 ];
 
 export const INITIAL_STATS: Record<number, CareerStats> = INITIAL_PLAYERS.reduce((acc, p) => ({
@@ -126,5 +137,13 @@ export const INITIAL_STATS: Record<number, CareerStats> = INITIAL_PLAYERS.reduce
     hatTricks: 0,
     wicketStreak: 0,
     bestBowling: { wickets: 0, runs: 0 },
+    catches: 0,
+    runOuts: 0,
+    throwComplete: 0,
+    stumpings: 0,
+    notOuts: 0,
+    catchDrop: 0,
+    missField: 0,
+    missedThrows: 0,
   }
 }), {});

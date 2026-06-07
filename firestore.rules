@@ -55,5 +55,23 @@ service cloud.firestore {
       allow create, update: if isSignedIn() && userId == request.auth.uid && isValidId(matchId) && isValidCricketMatchState(request.resource.data);
       allow delete: if isSignedIn() && userId == request.auth.uid;
     }
+
+    // Validation Blueprint for individual Player Profiles stored separately
+    function isValidPlayer(data) {
+      return data.keys().hasAll(['id', 'name', 'jerseyNo', 'dob', 'careerStats', 'updatedAt'])
+        && data.id is int
+        && data.name is string && data.name.size() <= 128
+        && (data.jerseyNo == null || data.jerseyNo is int)
+        && (data.dob == null || data.dob is string)
+        && data.careerStats is map
+        && data.updatedAt is string;
+    }
+
+    // Match individual Player Document
+    match /users/{userId}/players/{playerId} {
+      allow read: if isSignedIn() && userId == request.auth.uid;
+      allow create, update: if isSignedIn() && userId == request.auth.uid && isValidId(playerId) && isValidPlayer(request.resource.data);
+      allow delete: if isSignedIn() && userId == request.auth.uid;
+    }
   }
 }

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Trophy, 
   User, 
@@ -18,7 +18,15 @@ import {
   Sword,
   Pencil,
   Camera,
-  Download
+  Download,
+  Eye,
+  ArrowLeft,
+  Calendar,
+  Hash,
+  Star,
+  Save,
+  X,
+  Sprout
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -35,7 +43,7 @@ import {
 
 // Firebase core modules and handles
 import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, increment } from 'firebase/firestore';
 import { auth, db, googleProvider, signInWithPopup, signOut, handleFirestoreError, OperationType } from './firebase';
 
 const STORAGE_KEYS = {
@@ -43,19 +51,70 @@ const STORAGE_KEYS = {
   DISMISSALS: 'cricket_dismissals',
   MATCH: 'cricket_match_state',
   PLAYERS: 'cricket_players',
-  LOGS: 'cricket_manual_logs'
+  LOGS: 'cricket_manual_logs',
+  SESSION_STATS: 'cricket_session_stats'
 };
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'live' | 'career' | 'history' | 'settings'>('live');
-  const [players, setPlayers] = useState<Player[]>(INITIAL_PLAYERS);
-  const [careerStats, setCareerStats] = useState<Record<number, CareerStats>>(INITIAL_STATS);
+
+  // Unified persistent initialization checks
+  const SAVED_MATCH = localStorage.getItem('active_crickscore_match') || localStorage.getItem(STORAGE_KEYS.MATCH);
+  const INITIAL_MATCH_STATE = SAVED_MATCH ? JSON.parse(SAVED_MATCH) : null;
+
+  const [players, setPlayers] = useState<Player[]>(() => {
+    const saved = localStorage.getItem(STORAGE_KEYS.PLAYERS);
+    return saved ? JSON.parse(saved) : INITIAL_PLAYERS;
+  });
+
+  const [careerStats, setCareerStats] = useState<Record<number, CareerStats>>(() => {
+    const saved = localStorage.getItem(STORAGE_KEYS.STATS);
+    if (saved) {
+      const stats = JSON.parse(saved);
+      Object.keys(stats).forEach(id => {
+        const s = stats[id];
+        if (s) {
+          if (s.inningsBat === undefined) s.inningsBat = 0;
+          if (s.inningsBowl === undefined) s.inningsBowl = 0;
+          if (s.fifties === undefined) s.fifties = 0;
+          if (s.hundreds === undefined) s.hundreds = 0;
+          if (s.highestScore === undefined) s.highestScore = 0;
+          if (s.hatTricks === undefined) s.hatTricks = 0;
+          if (s.wicketStreak === undefined) s.wicketStreak = 0;
+          if (s.bestBowling === undefined) s.bestBowling = { wickets: 0, runs: 0 };
+          if (s.catches === undefined) s.catches = 0;
+          if (s.runOuts === undefined) s.runOuts = 0;
+          if (s.throwComplete === undefined) s.throwComplete = 0;
+          if (s.stumpings === undefined) s.stumpings = 0;
+          if (s.notOuts === undefined) s.notOuts = 0;
+          if (s.catchDrop === undefined) s.catchDrop = 0;
+          if (s.missField === undefined) s.missField = 0;
+          if (s.missedThrows === undefined) s.missedThrows = 0;
+        }
+      });
+      return stats;
+    }
+    return INITIAL_STATS;
+  });
+
   const [sessionStats, setSessionStats] = useState<Record<number, { 
-    batting: { runs: number; balls: number; inningsCounted?: boolean; }; 
-    bowling: { runs: number; balls: number; wickets: number; inningsCounted?: boolean; };
-  }>>({});
-  const [dismissals, setDismissals] = useState<DismissalRecord[]>([]);
-  const [manualEditLogs, setManualEditLogs] = useState<ManualEditLog[]>([]);
+    batting: { runs: number; balls: number }; 
+    bowling: { runs: number; balls: number; wickets: number };
+  }>>(() => {
+    const saved = localStorage.getItem(STORAGE_KEYS.SESSION_STATS);
+    return saved ? JSON.parse(saved) : {};
+  });
+
+  const [dismissals, setDismissals] = useState<DismissalRecord[]>(() => {
+    const saved = localStorage.getItem(STORAGE_KEYS.DISMISSALS);
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  const [manualEditLogs, setManualEditLogs] = useState<ManualEditLog[]>(() => {
+    const saved = localStorage.getItem(STORAGE_KEYS.LOGS);
+    return saved ? JSON.parse(saved) : [];
+  });
+
   const [editModal, setEditModal] = useState<{ 
     isOpen: boolean; 
     type: 'batting' | 'bowling' | 'full'; 
@@ -63,15 +122,18 @@ export default function App() {
     mode: 'overwrite' | 'add'
   } | null>(null);
   const [editForm, setEditForm] = useState<Record<string, any>>({});
-  const [match, setMatch] = useState<MatchState>({
-    strikerId: 1,
-    nonStrikerId: 2,
-    bowlerId: 3,
-    overBalls: 0,
-    currentOver: [],
-    totalRuns: 0,
-    totalWickets: 0,
-    extras: 0,
+  
+  const [match, setMatch] = useState<MatchState>(() => {
+    return INITIAL_MATCH_STATE || {
+      strikerId: 1,
+      nonStrikerId: 2,
+      bowlerId: 3,
+      overBalls: 0,
+      currentOver: [],
+      totalRuns: 0,
+      totalWickets: 0,
+      extras: 0,
+    };
   });
 
   const [isWicketModalOpen, setIsWicketModalOpen] = useState<{ isOpen: boolean; outPlayerId: number | null }>({
@@ -89,9 +151,26 @@ export default function App() {
     outPlayerId: null,
   });
 
+  const [isFielderModalOpen, setIsFielderModalOpen] = useState<{ isOpen: boolean; outPlayerId: number | null; type?: 'Stumping' | 'Catch' }>({
+    isOpen: false,
+    outPlayerId: null,
+    type: undefined,
+  });
+
   const [isBowlerModalOpen, setIsBowlerModalOpen] = useState(false);
+  const [extraModal, setExtraModal] = useState<{ isOpen: boolean; type: 'wide' | 'noball' | 'lb' | 'by' | null }>({
+    isOpen: false,
+    type: null,
+  });
   const [undoStack, setUndoStack] = useState<StateSnapshot[]>([]);
   const [redoStack, setRedoStack] = useState<StateSnapshot[]>([]);
+  const [selectedPlayerId, setSelectedPlayerId] = useState<number | null>(null);
+  const [isProfileOpen, setIsProfileOpen] = useState<boolean>(false);
+  const [isEditingProfile, setIsEditingProfile] = useState<boolean>(false);
+  const [editProfileName, setEditProfileName] = useState<string>("");
+  const [editProfileJersey, setEditProfileJersey] = useState<string>("");
+  const [editProfileDob, setEditProfileDob] = useState<string>("");
+  const [editCareerStats, setEditCareerStats] = useState<CareerStats | null>(null);
   const [notification, setNotification] = useState<string | null>(null);
 
   // Authentication & Cloud Synchronization State
@@ -101,6 +180,34 @@ export default function App() {
   const [isGuestMode, setIsGuestMode] = useState(() => {
     return localStorage.getItem('crick_guest_mode') === 'true';
   });
+
+  // Reference to avoid overwriting cloud files with outdated/blank values during hydration races
+  const lastCloudPayloadRef = useRef<string>('');
+
+  // Keep a ref of current states to avoid any stale closures inside onAuthStateChanged
+  const stateRef = useRef({
+    match,
+    players,
+    careerStats,
+    sessionStats,
+    dismissals,
+    manualEditLogs,
+    undoStack,
+    redoStack
+  });
+
+  useEffect(() => {
+    stateRef.current = {
+      match,
+      players,
+      careerStats,
+      sessionStats,
+      dismissals,
+      manualEditLogs,
+      undoStack,
+      redoStack
+    };
+  }, [match, players, careerStats, sessionStats, dismissals, manualEditLogs, undoStack, redoStack]);
 
   // Track guest mode state
   useEffect(() => {
@@ -129,21 +236,48 @@ export default function App() {
             if (data.manualEditLogs) setManualEditLogs(data.manualEditLogs);
             if (data.undoStack) setUndoStack(data.undoStack);
             if (data.redoStack) setRedoStack(data.redoStack);
+            
+            // Set comparison ref to prevent immediate race condition overwriting
+            lastCloudPayloadRef.current = JSON.stringify({
+              match: sanitizeMatchState(data.match || {}),
+              players: data.players || [],
+              careerStats: sanitizeCareerStats(data.careerStats || {}),
+              sessionStats: sanitizeSessionStats(data.sessionStats || {}),
+              dismissals: data.dismissals || [],
+              manualEditLogs: data.manualEditLogs || [],
+              undoStack: (data.undoStack || []).slice(-10),
+              redoStack: (data.redoStack || []).slice(-10)
+            });
+
             setNotification("Cloud Scores Synchronized");
           } else {
-            // First run, push the existing local storage / initialized state into cloud
-            await setDoc(matchDocRef, {
+            // Document does not exist. Use the up-to-date statRef to save initial or scored-as-guest state
+            const currentObj = stateRef.current;
+            const initialPayload = {
               userId: currentUser.uid,
               updatedAt: new Date().toISOString(),
-              match: sanitizeMatchState(match),
-              sessionStats: sanitizeSessionStats(sessionStats),
-              careerStats: sanitizeCareerStats(careerStats),
-              players: players,
-              dismissals: dismissals,
-              manualEditLogs: manualEditLogs,
-              undoStack: undoStack,
-              redoStack: redoStack
+              match: sanitizeMatchState(currentObj.match),
+              sessionStats: sanitizeSessionStats(currentObj.sessionStats),
+              careerStats: sanitizeCareerStats(currentObj.careerStats),
+              players: currentObj.players,
+              dismissals: currentObj.dismissals,
+              manualEditLogs: currentObj.manualEditLogs,
+              undoStack: currentObj.undoStack.slice(-10),
+              redoStack: currentObj.redoStack.slice(-10)
+            };
+            await setDoc(matchDocRef, initialPayload);
+            
+            lastCloudPayloadRef.current = JSON.stringify({
+              match: sanitizeMatchState(currentObj.match),
+              players: currentObj.players,
+              careerStats: sanitizeCareerStats(currentObj.careerStats),
+              sessionStats: sanitizeSessionStats(currentObj.sessionStats),
+              dismissals: currentObj.dismissals,
+              manualEditLogs: currentObj.manualEditLogs,
+              undoStack: currentObj.undoStack.slice(-10),
+              redoStack: currentObj.redoStack.slice(-10)
             });
+
             setNotification("Cloud Snapshot Created");
           }
         } catch (error) {
@@ -164,6 +298,22 @@ export default function App() {
   useEffect(() => {
     if (!user || !isLoadedFromCloud) return;
 
+    const currentPayload = JSON.stringify({
+      match: sanitizeMatchState(match),
+      players: players,
+      careerStats: sanitizeCareerStats(careerStats),
+      sessionStats: sanitizeSessionStats(sessionStats),
+      dismissals: dismissals,
+      manualEditLogs: manualEditLogs,
+      undoStack: undoStack.slice(-10), 
+      redoStack: redoStack.slice(-10)
+    });
+
+    // If the state is identical to the last fetched or saved cloud payload, skip saving!
+    if (currentPayload === lastCloudPayloadRef.current) {
+      return;
+    }
+
     const timer = setTimeout(async () => {
       try {
         const matchDocRef = doc(db, 'users', user.uid, 'matches', 'current');
@@ -179,6 +329,7 @@ export default function App() {
           undoStack: undoStack.slice(-10), 
           redoStack: redoStack.slice(-10)
         });
+        lastCloudPayloadRef.current = currentPayload;
         console.log("Match autosaved to cloud");
       } catch (error) {
         console.warn("Firestore queued update offline:", error);
@@ -216,6 +367,9 @@ export default function App() {
       setIsGuestMode(false);
       setIsLoadedFromCloud(false);
       
+      // Clear comparison reference
+      lastCloudPayloadRef.current = '';
+      
       // Clear local states
       setPlayers(INITIAL_PLAYERS);
       setCareerStats(INITIAL_STATS);
@@ -242,6 +396,8 @@ export default function App() {
       localStorage.removeItem(STORAGE_KEYS.PLAYERS);
       localStorage.removeItem(STORAGE_KEYS.LOGS);
       localStorage.removeItem('crick_guest_mode');
+      localStorage.removeItem(STORAGE_KEYS.SESSION_STATS);
+      localStorage.removeItem('active_crickscore_match');
       
       setNotification("Session logged out");
     } catch (error) {
@@ -287,7 +443,16 @@ export default function App() {
         bestBowling: {
           wickets: Math.max(0, s.bestBowling?.wickets || 0),
           runs: Math.max(0, s.bestBowling?.runs || 0)
-        }
+        },
+        catches: Math.max(0, s.catches || 0),
+        runOuts: Math.max(0, s.runOuts || s.throwComplete || 0),
+        throwComplete: Math.max(0, s.throwComplete || s.runOuts || 0),
+        stumpings: Math.max(0, s.stumpings || 0),
+        notOuts: Math.max(0, s.notOuts || 0),
+        innings: Math.max(0, s.innings || 0),
+        catchDrop: Math.max(0, s.catchDrop || 0),
+        missField: Math.max(0, s.missField || 0),
+        missedThrows: Math.max(0, s.missedThrows || 0)
       };
     }
     return sanitized;
@@ -423,9 +588,10 @@ export default function App() {
 
     const savedStats = localStorage.getItem(STORAGE_KEYS.STATS);
     const savedDismissals = localStorage.getItem(STORAGE_KEYS.DISMISSALS);
-    const savedMatch = localStorage.getItem(STORAGE_KEYS.MATCH);
+    const savedMatch = localStorage.getItem('active_crickscore_match') || localStorage.getItem(STORAGE_KEYS.MATCH);
     const savedPlayers = localStorage.getItem(STORAGE_KEYS.PLAYERS);
     const savedLogs = localStorage.getItem(STORAGE_KEYS.LOGS);
+    const savedSessionStats = localStorage.getItem(STORAGE_KEYS.SESSION_STATS);
 
     if (savedStats) {
       const stats = JSON.parse(savedStats);
@@ -447,15 +613,18 @@ export default function App() {
     if (savedMatch) setMatch(JSON.parse(savedMatch));
     if (savedPlayers) setPlayers(JSON.parse(savedPlayers));
     if (savedLogs) setManualEditLogs(JSON.parse(savedLogs));
+    if (savedSessionStats) setSessionStats(JSON.parse(savedSessionStats));
   }, []);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.STATS, JSON.stringify(careerStats));
     localStorage.setItem(STORAGE_KEYS.DISMISSALS, JSON.stringify(dismissals));
     localStorage.setItem(STORAGE_KEYS.MATCH, JSON.stringify(match));
+    localStorage.setItem('active_crickscore_match', JSON.stringify(match));
     localStorage.setItem(STORAGE_KEYS.PLAYERS, JSON.stringify(players));
     localStorage.setItem(STORAGE_KEYS.LOGS, JSON.stringify(manualEditLogs));
-  }, [careerStats, dismissals, match, players, manualEditLogs]);
+    localStorage.setItem(STORAGE_KEYS.SESSION_STATS, JSON.stringify(sessionStats));
+  }, [careerStats, dismissals, match, players, manualEditLogs, sessionStats]);
 
   const openEditModal = (type: 'batting' | 'bowling' | 'full', playerId: number) => {
     const stats = getPlayerStats(playerId);
@@ -761,42 +930,134 @@ export default function App() {
     }
   };
 
-  const handleExtra = (type: 'wide' | 'noball') => {
+  const submitExtraRuns = (type: 'wide' | 'noball' | 'lb' | 'by', additionalRuns: number) => {
+    if ((type === 'lb' || type === 'by') && additionalRuns === 0) {
+      handleScore(0);
+      setNotification(`${type === 'lb' ? 'Leg Bye' : 'Bye'} recorded as Dot Ball`);
+      setExtraModal({ isOpen: false, type: null });
+      return;
+    }
+
     pushToHistory();
 
-    const label = type === 'wide' ? '1wd' : '1NB';
+    const isOverEnd = (type === 'lb' || type === 'by') ? (match.overBalls === 5) : false;
 
-    setMatch(prev => ({
-      ...prev,
-      totalRuns: prev.totalRuns + 1,
-      extras: (prev.extras || 0) + 1,
-      currentOver: [...prev.currentOver, label],
-    }));
+    // label format: e.g. "WD" or "WD+1", "NB" or "NB+4", "LB", "LB+1", "B", "B+1"
+    const label = additionalRuns === 0 
+      ? (type === 'wide' ? 'WD' : type === 'noball' ? 'NB' : type === 'lb' ? 'LB' : 'B')
+      : (type === 'wide' ? `WD+${additionalRuns}` : type === 'noball' ? `NB+${additionalRuns}` : type === 'lb' ? `LB+${additionalRuns}` : `B+${additionalRuns}`);
 
-    setSessionStats(prev => {
-      const b = prev[match.bowlerId] || { batting: { runs: 0, balls: 0 }, bowling: { runs: 0, balls: 0, wickets: 0 } };
+    const penalty = 1;
+    const deliveryTotalConceded = penalty + additionalRuns;
+
+    // Strike Rotation logic:
+    let rotate = false;
+    if (type === 'wide' || type === 'noball') {
+      rotate = (additionalRuns % 2 !== 0);
+    } else {
+      // lb or by: if physical runs run by batsman is odd
+      const physicalRunsRun = (additionalRuns === 4 || additionalRuns === 6) ? 0 : (1 + additionalRuns);
+      const ranOdd = (physicalRunsRun % 2 !== 0);
+      rotate = ( (ranOdd && !isOverEnd) || (!ranOdd && isOverEnd) );
+    }
+
+    setMatch(prev => {
+      const nextStrikerId = rotate ? prev.nonStrikerId : prev.strikerId;
+      const nextNonStrikerId = rotate ? prev.strikerId : prev.nonStrikerId;
+      
       return {
         ...prev,
+        overBalls: (type === 'lb' || type === 'by') ? (isOverEnd ? 0 : prev.overBalls + 1) : prev.overBalls,
+        totalRuns: prev.totalRuns + deliveryTotalConceded,
+        extras: prev.extras + deliveryTotalConceded,
+        currentOver: [...prev.currentOver, label],
+        ...(rotate ? {
+          strikerId: nextStrikerId,
+          nonStrikerId: nextNonStrikerId
+        } : {})
+      };
+    });
+
+    setSessionStats(prev => {
+      const s = prev[match.strikerId] || { batting: { runs: 0, balls: 0, inningsCounted: false }, bowling: { runs: 0, balls: 0, wickets: 0 } };
+      const b = prev[match.bowlerId] || { batting: { runs: 0, balls: 0, inningsCounted: false }, bowling: { runs: 0, balls: 0, wickets: 0 } };
+
+      const newStrikerBatting = { ...s.batting };
+      if (type === 'noball' || type === 'lb' || type === 'by') {
+        newStrikerBatting.balls = s.batting.balls + 1; // Nb, LB, and Bye counts as ball faced by batsman
+        newStrikerBatting.inningsCounted = true;
+      }
+
+      const newBowlerBowling = { ...b.bowling };
+      if (type === 'lb' || type === 'by') {
+        newBowlerBowling.balls = b.bowling.balls + 1; // legal delivery
+      } else {
+        newBowlerBowling.runs = b.bowling.runs + deliveryTotalConceded;
+      }
+
+      return {
+        ...prev,
+        ...((type === 'noball' || type === 'lb' || type === 'by') ? {
+          [match.strikerId]: {
+            ...s,
+            batting: newStrikerBatting
+          }
+        } : {}),
         [match.bowlerId]: {
           ...b,
-          bowling: { ...b.bowling, runs: b.bowling.runs + 1 }
+          bowling: newBowlerBowling
         }
       };
     });
 
     setCareerStats(prev => {
-      const stats = getPlayerStats(match.bowlerId);
+      const getStatsFromPrev = (statsRecord: Record<number, CareerStats>, id: number): CareerStats => {
+        return statsRecord[id] || {
+          runs: 0, ballsFaced: 0, fours: 0, sixes: 0, fifties: 0, hundreds: 0,
+          inningsBat: 0, highestScore: 0,
+          wickets: 0, ballsBowled: 0, runsConceded: 0, hatTricks: 0,
+          bestBowling: { wickets: 0, runs: 0 },
+          wicketStreak: 0,
+          dots: 0,
+          inningsBowl: 0
+        };
+      };
+
+      const striker = getStatsFromPrev(prev, match.strikerId);
+      const bowler = getStatsFromPrev(prev, match.bowlerId);
+      const wasCounted = sessionStats[match.strikerId]?.batting?.inningsCounted;
+
+      const newStrikerStats = { ...striker };
+      if (type === 'noball' || type === 'lb' || type === 'by') {
+        newStrikerStats.ballsFaced = striker.ballsFaced + 1;
+        newStrikerStats.inningsBat = striker.inningsBat + (wasCounted ? 0 : 1);
+      }
+
+      const newBowlerStats = { ...bowler };
+      if (type === 'lb' || type === 'by') {
+        newBowlerStats.ballsBowled = bowler.ballsBowled + 1;
+        newBowlerStats.wicketStreak = 0; // Reset consecutive delivery streak on extras
+      } else {
+        newBowlerStats.runsConceded = bowler.runsConceded + deliveryTotalConceded;
+        newBowlerStats.wicketStreak = 0; // Reset consecutive delivery streak on extras
+      }
+
       return {
         ...prev,
-        [match.bowlerId]: {
-          ...stats,
-          runsConceded: stats.runsConceded + 1,
-          wicketStreak: 0, // Extras reset the consecutive delivery streak
-        }
+        ...((type === 'noball' || type === 'lb' || type === 'by') ? { [match.strikerId]: newStrikerStats } : {}),
+        [match.bowlerId]: newBowlerStats
       };
     });
 
-    setNotification(`${type === 'wide' ? 'Wide' : 'No-Ball'} recorded (+1 Extra run added)`);
+    setExtraModal({ isOpen: false, type: null });
+
+    const extraTypeName = type === 'wide' ? 'Wide' : (type === 'noball' ? 'No-Ball' : (type === 'lb' ? 'Leg Bye' : 'Bye'));
+    const additionSuffix = additionalRuns > 0 ? ` (+${additionalRuns} run${additionalRuns > 1 ? 's' : ''} scored)` : '';
+    setNotification(`${extraTypeName} recorded: +${deliveryTotalConceded} run${deliveryTotalConceded > 1 ? 's' : ''}${additionSuffix}`);
+
+    if (isOverEnd) {
+      setIsBowlerModalOpen(true);
+    }
   };
 
   const handleWicket = (outPlayerId: number) => {
@@ -920,6 +1181,261 @@ export default function App() {
     
     // Close dismissal modal, open next batsman modal
     setDismissalModal({ isOpen: false, outPlayerId: null });
+    setIsWicketModalOpen({ isOpen: true, outPlayerId });
+  };
+
+  const confirmStumping = async (outPlayerId: number, keeperId: number) => {
+    const outPlayer = players.find(p => p.id === outPlayerId);
+    const outPlayerName = outPlayer?.name || 'Unknown';
+
+    const currentSession = sessionStats[outPlayerId]?.batting || { runs: 0, balls: 0, inningsCounted: false };
+    const finalSession = {
+      runs: currentSession.runs,
+      balls: currentSession.balls + 1,
+      inningsCounted: true
+    };
+
+    // 1. Career stats local updates
+    setCareerStats(prev => {
+      const getStatsFromPrev = (statsRecord: Record<number, CareerStats>, id: number): CareerStats => {
+        return statsRecord[id] || {
+          runs: 0, ballsFaced: 0, fours: 0, sixes: 0, fifties: 0, hundreds: 0,
+          inningsBat: 0, highestScore: 0,
+          wickets: 0, ballsBowled: 0, runsConceded: 0, hatTricks: 0,
+          bestBowling: { wickets: 0, runs: 0 },
+          wicketStreak: 0,
+          dots: 0,
+          inningsBowl: 0,
+          stumpings: 0
+        };
+      };
+
+      const nextCareerStats = { ...prev };
+
+      // Bowler stats
+      const originalBowlerStats = getStatsFromPrev(prev, match.bowlerId);
+      const s_newStreak = originalBowlerStats.wicketStreak + 1;
+      const s_isHatTrick = s_newStreak === 3;
+
+      nextCareerStats[match.bowlerId] = {
+        ...originalBowlerStats,
+        wickets: originalBowlerStats.wickets + 1,
+        ballsBowled: originalBowlerStats.ballsBowled + 1,
+        wicketStreak: s_isHatTrick ? 0 : s_newStreak,
+        hatTricks: originalBowlerStats.hatTricks + (s_isHatTrick ? 1 : 0)
+      };
+
+      // Out player stats
+      const originalOutStats = getStatsFromPrev(prev, outPlayerId);
+      const isFifty = finalSession.runs >= 50 && finalSession.runs < 100;
+      const isHundred = finalSession.runs >= 100;
+      const wasCounted = !!currentSession.inningsCounted;
+
+      nextCareerStats[outPlayerId] = {
+        ...originalOutStats,
+        ballsFaced: originalOutStats.ballsFaced + 1,
+        inningsBat: originalOutStats.inningsBat + (wasCounted ? 0 : 1),
+        fifties: originalOutStats.fifties + (isFifty ? 1 : 0),
+        hundreds: originalOutStats.hundreds + (isHundred ? 1 : 0),
+        highestScore: Math.max(originalOutStats.highestScore, finalSession.runs)
+      };
+
+      // Wicketkeeper stats
+      const originalKeeperStats = getStatsFromPrev(prev, keeperId);
+      nextCareerStats[keeperId] = {
+        ...originalKeeperStats,
+        stumpings: (originalKeeperStats.stumpings || 0) + 1
+      };
+
+      return nextCareerStats;
+    });
+
+    // 2. Save Dismissal Record
+    setDismissals(prev => [
+      ...prev,
+      {
+        batsmanId: outPlayerId,
+        bowlerId: match.bowlerId,
+        timestamp: Date.now(),
+      }
+    ]);
+
+    // 3. Update Session Scoreboard
+    setSessionStats(prev => {
+      const b = prev[match.bowlerId] || { batting: { runs: 0, balls: 0 }, bowling: { runs: 0, balls: 0, wickets: 0 } };
+      return {
+        ...prev,
+        [match.bowlerId]: {
+          ...b,
+          bowling: { 
+            ...b.bowling, 
+            wickets: b.bowling.wickets + 1, 
+            balls: b.bowling.balls + 1 
+          }
+        },
+        [outPlayerId]: {
+          ...(prev[outPlayerId] || { bowling: { runs: 0, balls: 0, wickets: 0 } }),
+          batting: { runs: 0, balls: 0, inningsCounted: false }
+        }
+      };
+    });
+
+    // 4. Match State updates
+    setMatch(prev => ({
+      ...prev,
+      totalWickets: prev.totalWickets + 1,
+      overBalls: prev.overBalls === 5 ? 0 : prev.overBalls + 1,
+      currentOver: [...prev.currentOver, 'W'],
+      strikerId: 0, // Clear striker slot
+    }));
+
+    // 5. Update selected player's Firestore document
+    if (user) {
+      try {
+        const playerRef = doc(db, 'users', user.uid, 'players', String(keeperId));
+        await updateDoc(playerRef, {
+          'careerStats.stumpings': increment(1)
+        });
+      } catch (error) {
+        console.error("Firestore player document update failed:", error);
+        handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}/players/${keeperId}`);
+      }
+    }
+
+    // 6. Set UI Feedback & open batsman dialog list
+    const sessionBatting = sessionStats[outPlayerId]?.batting || { runs: 0, balls: 0 };
+    const keeperName = players.find(p => p.id === keeperId)?.name || 'Wicketkeeper';
+    setNotification(`Stumped out by ${keeperName}: Innings Saved for ${outPlayerName} (${sessionBatting.runs} runs)`);
+
+    setIsFielderModalOpen({ isOpen: false, outPlayerId: null });
+    setIsWicketModalOpen({ isOpen: true, outPlayerId });
+  };
+
+  const confirmCatch = async (outPlayerId: number, fielderId: number) => {
+    const outPlayer = players.find(p => p.id === outPlayerId);
+    const outPlayerName = outPlayer?.name || 'Unknown';
+
+    const currentSession = sessionStats[outPlayerId]?.batting || { runs: 0, balls: 0, inningsCounted: false };
+    const finalSession = {
+      runs: currentSession.runs,
+      balls: currentSession.balls + 1,
+      inningsCounted: true
+    };
+
+    // 1. Career stats local updates
+    setCareerStats(prev => {
+      const getStatsFromPrev = (statsRecord: Record<number, CareerStats>, id: number): CareerStats => {
+        return statsRecord[id] || {
+          runs: 0, ballsFaced: 0, fours: 0, sixes: 0, fifties: 0, hundreds: 0,
+          inningsBat: 0, highestScore: 0,
+          wickets: 0, ballsBowled: 0, runsConceded: 0, hatTricks: 0,
+          bestBowling: { wickets: 0, runs: 0 },
+          wicketStreak: 0,
+          dots: 0,
+          inningsBowl: 0,
+          stumpings: 0,
+          catches: 0
+        };
+      };
+
+      const nextCareerStats = { ...prev };
+
+      // Bowler stats
+      const originalBowlerStats = getStatsFromPrev(prev, match.bowlerId);
+      const s_newStreak = originalBowlerStats.wicketStreak + 1;
+      const s_isHatTrick = s_newStreak === 3;
+
+      nextCareerStats[match.bowlerId] = {
+        ...originalBowlerStats,
+        wickets: originalBowlerStats.wickets + 1,
+        ballsBowled: originalBowlerStats.ballsBowled + 1,
+        wicketStreak: s_isHatTrick ? 0 : s_newStreak,
+        hatTricks: originalBowlerStats.hatTricks + (s_isHatTrick ? 1 : 0)
+      };
+
+      // Out player stats
+      const originalOutStats = getStatsFromPrev(prev, outPlayerId);
+      const isFifty = finalSession.runs >= 50 && finalSession.runs < 100;
+      const isHundred = finalSession.runs >= 100;
+      const wasCounted = !!currentSession.inningsCounted;
+
+      nextCareerStats[outPlayerId] = {
+        ...originalOutStats,
+        ballsFaced: originalOutStats.ballsFaced + 1,
+        inningsBat: originalOutStats.inningsBat + (wasCounted ? 0 : 1),
+        fifties: originalOutStats.fifties + (isFifty ? 1 : 0),
+        hundreds: originalOutStats.hundreds + (isHundred ? 1 : 0),
+        highestScore: Math.max(originalOutStats.highestScore, finalSession.runs)
+      };
+
+      // Fielder stats
+      const originalFielderStats = getStatsFromPrev(prev, fielderId);
+      nextCareerStats[fielderId] = {
+        ...originalFielderStats,
+        catches: (originalFielderStats.catches || 0) + 1
+      };
+
+      return nextCareerStats;
+    });
+
+    // 2. Save Dismissal Record
+    setDismissals(prev => [
+      ...prev,
+      {
+        batsmanId: outPlayerId,
+        bowlerId: match.bowlerId,
+        timestamp: Date.now(),
+      }
+    ]);
+
+    // 3. Update Session Scoreboard
+    setSessionStats(prev => {
+      const b = prev[match.bowlerId] || { batting: { runs: 0, balls: 0 }, bowling: { runs: 0, balls: 0, wickets: 0 } };
+      return {
+        ...prev,
+        [match.bowlerId]: {
+          ...b,
+          bowling: { 
+            ...b.bowling, 
+            wickets: b.bowling.wickets + 1, 
+            balls: b.bowling.balls + 1 
+          }
+        },
+        [outPlayerId]: {
+          ...(prev[outPlayerId] || { bowling: { runs: 0, balls: 0, wickets: 0 } }),
+          batting: { runs: 0, balls: 0, inningsCounted: false }
+        }
+      };
+    });
+
+    // 4. Match State updates
+    setMatch(prev => ({
+      ...prev,
+      totalWickets: prev.totalWickets + 1,
+      overBalls: prev.overBalls === 5 ? 0 : prev.overBalls + 1,
+      currentOver: [...prev.currentOver, 'W'],
+      strikerId: 0, // Clear striker slot
+    }));
+
+    // 5. Update selected player's Firestore document
+    if (user) {
+      try {
+        const playerRef = doc(db, 'users', user.uid, 'players', String(fielderId));
+        await updateDoc(playerRef, {
+          'careerStats.catches': increment(1)
+        });
+      } catch (error) {
+        console.error("Firestore player document update failed:", error);
+        handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}/players/${fielderId}`);
+      }
+    }
+
+    // 6. Set UI Feedback & open batsman dialog list
+    const sessionBatting = sessionStats[outPlayerId]?.batting || { runs: 0, balls: 0 };
+    const fielderName = players.find(p => p.id === fielderId)?.name || 'Fielder';
+    setNotification(`Caught out by ${fielderName}: Innings Saved for ${outPlayerName} (${sessionBatting.runs} runs)`);
+
+    setIsFielderModalOpen({ isOpen: false, outPlayerId: null });
     setIsWicketModalOpen({ isOpen: true, outPlayerId });
   };
 
@@ -1163,6 +1679,158 @@ export default function App() {
     }));
     
     setIsBowlerModalOpen(true);
+  };
+
+  const handleInningsEnd = async () => {
+    const strikerId = match.strikerId;
+    const nonStrikerId = match.nonStrikerId;
+
+    if (!strikerId || strikerId === 0) {
+      setNotification("No active striker selected.");
+      return;
+    }
+
+    pushToHistory();
+
+    const strikerPlayer = players.find(p => p.id === strikerId);
+    const strikerName = strikerPlayer?.name || "Striker";
+
+    // 1. Get current career stats for Striker
+    const strikerStats = getPlayerStats(strikerId);
+
+    // 2. Fetch active session stats to compute milestones for Striker
+    const strikerSession = sessionStats[strikerId]?.batting || { runs: 0, balls: 0, inningsCounted: false };
+    const strikerFifty = strikerSession.runs >= 50 && strikerSession.runs < 100;
+    const strikerHundred = strikerSession.runs >= 100;
+
+    const newStrikerStats: CareerStats = {
+      ...strikerStats,
+      innings: (strikerStats.innings || 0) + 1,
+      notOuts: (strikerStats.notOuts || 0) + 1,
+      inningsBat: strikerStats.inningsBat + (strikerSession.balls > 0 && !strikerSession.inningsCounted ? 1 : 0),
+      fifties: strikerStats.fifties + (strikerFifty ? 1 : 0),
+      hundreds: strikerStats.hundreds + (strikerHundred ? 1 : 0),
+      highestScore: Math.max(strikerStats.highestScore || 0, strikerSession.runs || 0)
+    };
+
+    // 3. Compute stats for Non-Striker if active
+    let newNonStrikerStats: CareerStats | null = null;
+    const nonStrikerPlayer = nonStrikerId && nonStrikerId !== 0 ? players.find(p => p.id === nonStrikerId) : null;
+    const nonStrikerName = nonStrikerPlayer?.name || "Non-Striker";
+
+    if (nonStrikerId && nonStrikerId !== 0) {
+      const nonStrikerStats = getPlayerStats(nonStrikerId);
+      const nonStrikerSession = sessionStats[nonStrikerId]?.batting || { runs: 0, balls: 0, inningsCounted: false };
+      const nonStrikerFifty = nonStrikerSession.runs >= 50 && nonStrikerSession.runs < 100;
+      const nonStrikerHundred = nonStrikerSession.runs >= 100;
+
+      newNonStrikerStats = {
+        ...nonStrikerStats,
+        innings: (nonStrikerStats.innings || 0) + 1,
+        notOuts: (nonStrikerStats.notOuts || 0) + 1,
+        inningsBat: nonStrikerStats.inningsBat + (nonStrikerSession.balls > 0 && !nonStrikerSession.inningsCounted ? 1 : 0),
+        fifties: nonStrikerStats.fifties + (nonStrikerFifty ? 1 : 0),
+        hundreds: nonStrikerStats.hundreds + (nonStrikerHundred ? 1 : 0),
+        highestScore: Math.max(nonStrikerStats.highestScore || 0, nonStrikerSession.runs || 0)
+      };
+    }
+
+    // Update local React state for careerStats
+    setCareerStats(prev => {
+      const nextStats = {
+        ...prev,
+        [strikerId]: newStrikerStats
+      };
+      if (nonStrikerId && nonStrikerId !== 0 && newNonStrikerStats) {
+        nextStats[nonStrikerId] = newNonStrikerStats;
+      }
+      return nextStats;
+    });
+
+    // Helper to build payload
+    const buildPayload = (id: number, name: string, jerseyNo: number | null | undefined, dob: string | null | undefined, uStats: CareerStats) => ({
+      id,
+      name: name || '',
+      jerseyNo: jerseyNo ?? null,
+      dob: dob || null,
+      careerStats: {
+        runs: Math.max(0, Number(uStats.runs) || 0),
+        ballsFaced: Math.max(0, Number(uStats.ballsFaced) || 0),
+        fours: Math.max(0, Number(uStats.fours) || 0),
+        sixes: Math.max(0, Number(uStats.sixes) || 0),
+        wickets: Math.max(0, Number(uStats.wickets) || 0),
+        runsConceded: Math.max(0, Number(uStats.runsConceded) || 0),
+        ballsBowled: Math.max(0, Number(uStats.ballsBowled) || 0),
+        dots: Math.max(0, Number(uStats.dots) || 0),
+        inningsBat: Math.max(0, Number(uStats.inningsBat) || 0),
+        inningsBowl: Math.max(0, Number(uStats.inningsBowl) || 0),
+        fifties: Math.max(0, Number(uStats.fifties) || 0),
+        hundreds: Math.max(0, Number(uStats.hundreds) || 0),
+        highestScore: Math.max(0, Number(uStats.highestScore) || 0),
+        hatTricks: Math.max(0, Number(uStats.hatTricks) || 0),
+        wicketStreak: Math.max(0, Number(uStats.wicketStreak) || 0),
+        bestBowling: {
+          wickets: Math.max(0, Number(uStats.bestBowling?.wickets) || 0),
+          runs: Math.max(0, Number(uStats.bestBowling?.runs) || 0)
+        },
+        catches: Math.max(0, Number(uStats.catches) || 0),
+        runOuts: Math.max(0, Number(uStats.runOuts) || Number(uStats.throwComplete) || 0),
+        throwComplete: Math.max(0, Number(uStats.throwComplete) || Number(uStats.runOuts) || 0),
+        stumpings: Math.max(0, Number(uStats.stumpings) || 0),
+        notOuts: Math.max(0, Number(uStats.notOuts) || 0),
+        innings: Math.max(0, Number(uStats.innings) || 0),
+        catchDrop: Math.max(0, Number(uStats.catchDrop) || 0),
+        missField: Math.max(0, Number(uStats.missField) || 0),
+        missedThrows: Math.max(0, Number(uStats.missedThrows) || 0)
+      },
+      updatedAt: new Date().toISOString()
+    });
+
+    // If logged in, trigger Firestore update for this specific player document
+    if (user) {
+      try {
+        // Update Striker
+        const strikerRef = doc(db, 'users', user.uid, 'players', String(strikerId));
+        const strikerPayload = buildPayload(strikerId, strikerPlayer?.name || '', strikerPlayer?.jerseyNo, strikerPlayer?.dob, newStrikerStats);
+        await setDoc(strikerRef, strikerPayload);
+
+        // Update Non-Striker with safety guard
+        if (nonStrikerId && nonStrikerId !== 0 && newNonStrikerStats) {
+          const nonStrikerRef = doc(db, 'users', user.uid, 'players', String(nonStrikerId));
+          const nonStrikerPayload = buildPayload(nonStrikerId, nonStrikerPlayer?.name || '', nonStrikerPlayer?.jerseyNo, nonStrikerPlayer?.dob, newNonStrikerStats);
+          await setDoc(nonStrikerRef, nonStrikerPayload);
+          setNotification(`Innings ended! ${strikerName} & ${nonStrikerName} remained Not Out. Cloud updated.`);
+        } else {
+          setNotification(`Innings ended! ${strikerName} remained Not Out. Cloud updated.`);
+        }
+      } catch (error) {
+        console.error("Firestore player docs update failed", error);
+        handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}/players/...`);
+      }
+    } else {
+      if (nonStrikerId && nonStrikerId !== 0) {
+        setNotification(`Innings ended! ${strikerName} & ${nonStrikerName} remained Not Out (Guest Mode).`);
+      } else {
+        setNotification(`Innings ended! ${strikerName} remained Not Out (Guest Mode).`);
+      }
+    }
+
+    // 3. State Cleanup: Reset the active live match scoring states back to default zeros (00)
+    const p1 = players[0]?.id || 1;
+    const p2 = players[1]?.id || 2;
+    const p3 = players[2]?.id || 3;
+
+    setMatch({
+      strikerId: p1,
+      nonStrikerId: p2,
+      bowlerId: p3,
+      overBalls: 0,
+      currentOver: [],
+      totalRuns: 0,
+      totalWickets: 0,
+      extras: 0,
+    });
+    setSessionStats({});
   };
 
   const handleNewMatch = () => {
@@ -1417,7 +2085,7 @@ export default function App() {
         <!-- Actions Row for PDF download / Printing -->
         <div class="no-print flex justify-between items-center bg-white/5 border border-white/10 p-4 rounded-xl shadow-lg">
             <span class="text-xs text-gray-400 uppercase font-mono tracking-wider">📄 Offline Career Statistics Report</span>
-            <button onclick="window.print()" class="flex items-center gap-2 py-2 px-5 bg-linear-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-black font-bold uppercase text-[11px] tracking-wider rounded-lg shadow-lg transition-all active:scale-95 duration-200">
+            <button onclick="window.print()" class="flex items-center gap-2 py-2 px-5 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-black font-bold uppercase text-[11px] tracking-wider rounded-lg shadow-lg transition-all active:scale-95 duration-200">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path></svg>
                 Print / Save as PDF
             </button>
@@ -1525,9 +2193,9 @@ export default function App() {
 
   if (authLoading) {
     return (
-      <div className="min-h-screen bg-[#151619] flex items-center justify-center font-sans">
+      <div className="min-h-screen bg-gradient-to-b from-[#0B1033] to-[#05071A] flex items-center justify-center font-sans">
         <div className="text-center space-y-4">
-          <div className="w-16 h-16 border-4 border-orange-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
+          <div className="w-16 h-16 border-4 border-[#FF1F7E] border-t-transparent rounded-full animate-spin mx-auto"></div>
           <p className="text-gray-400 font-mono text-xs uppercase tracking-widest animate-pulse">Initializing Environment...</p>
         </div>
       </div>
@@ -1536,65 +2204,65 @@ export default function App() {
 
   if (!user && !isGuestMode) {
     return (
-      <div className="min-h-screen bg-[#151619] flex items-center justify-center p-6 text-white font-sans selection:bg-orange-500/30">
+      <div className="min-h-screen bg-gradient-to-b from-[#0B1033] to-[#05071A] flex items-center justify-center p-6 text-white font-sans selection:bg-[#FF1F7E]/30">
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="w-full max-w-md bg-[#1a1b1e] border-2 border-white/5 p-8 rounded-3xl shadow-2xl relative overflow-hidden"
+          className="w-full max-w-md bg-[#0D153B] border border-[#FF1F7E]/25 p-8 rounded-3xl shadow-2xl relative overflow-hidden shadow-[#FF1F7E]/10"
         >
           {/* Decorative accents */}
-          <div className="absolute -top-12 -right-12 w-32 h-32 bg-orange-500/10 rounded-full blur-3xl"></div>
-          <div className="absolute -bottom-12 -left-12 w-32 h-32 bg-orange-500/5 rounded-full blur-3xl"></div>
-
+          <div className="absolute -top-12 -right-12 w-32 h-32 bg-[#FF1F7E]/15 rounded-full blur-3xl"></div>
+          <div className="absolute -bottom-12 -left-12 w-32 h-32 bg-[#FF1F7E]/5 rounded-full blur-3xl"></div>
+ 
           <div className="flex flex-col items-center text-center space-y-6 relative z-10">
-            <div className="w-16 h-16 bg-gradientlinear-to-br from-orange-500 to-[#FF6B00] rounded-2xl flex items-center justify-center shadow-lg shadow-orange-500/10 border border-orange-500/30">
-              <Trophy size={32} className="text-black" />
+            <div className="w-16 h-16 bg-gradient-to-br from-[#FF1F7E] to-[#DF0A61] rounded-2xl flex items-center justify-center shadow-lg shadow-[#FF1F7E]/25 border border-[#FF1F7E]/40">
+              <Trophy size={32} className="text-white" />
             </div>
-
+ 
             <div className="space-y-2">
               <h1 className="text-3xl font-extrabold uppercase tracking-tighter text-white font-mono">
-                CrickScore
+                <span className="text-[#FF1F7E]">CRICK</span><span className="text-white">SCORE</span>
               </h1>
-              <p className="text-[10px] uppercase font-mono text-orange-500 tracking-[0.2em] font-bold">
+              <p className="text-[10px] uppercase font-mono text-[#FFA000] tracking-[0.2em] font-bold">
                 Infinite Loop Scorer
               </p>
-              <p className="text-xs text-gray-400 font-mono max-w-xs pt-2 leading-relaxed">
+              <p className="text-xs text-[#CBD5E1] font-mono max-w-xs pt-2 leading-relaxed">
                 Cloud-backed session statistics, career profiles, milestones, and offline capability.
               </p>
             </div>
-
+ 
             <div className="w-full pt-4 space-y-3">
               <button
                 onClick={handleGoogleLogin}
-                className="w-full flex items-center justify-center gap-3 py-4 px-6 bg-[#25262b] hover:bg-[#2c2d33] border border-orange-500/50 hover:border-orange-500 text-white font-bold font-mono uppercase text-xs tracking-wider rounded-2xl transition-all shadow-lg active:scale-[0.98] cursor-pointer"
+                className="w-full flex items-center justify-center gap-3 py-4 px-6 bg-[#121A4B] hover:bg-[#1A266D] border border-[#FF1F7E]/40 hover:border-[#FF1F7E] text-white font-bold font-mono uppercase text-xs tracking-wider rounded-2xl transition-all shadow-lg active:scale-[0.98] cursor-pointer"
               >
                 <svg className="w-4 h-4" viewBox="0 0 24 24">
                   <path fill="#EA4335" d="M12.24 10.285V14.4h6.887c-.275 1.564-1.859 4.604-6.887 4.604-4.337 0-7.874-3.59-7.874-8s3.537-8 7.874-8c2.467 0 4.12 1.025 5.064 1.93l3.245-3.13C18.375 1.914 15.545 1 12.24 1A10.974 10.974 0 0 0 1.25 12a10.974 10.974 0 0 0 10.99 11c5.73 0 11.25-4.04 11.25-11.25 0-.765-.082-1.343-.225-1.742H12.24z"/>
                 </svg>
                 Continue with Google
               </button>
-
+ 
               <button
                 onClick={() => {
                   setIsGuestMode(true);
                   setNotification("Entered Guest Mode");
                 }}
-                className="w-full py-4 px-6 bg-transparent hover:bg-white/5 border border-white/10 text-gray-400 hover:text-white font-mono uppercase text-[10px] tracking-widest rounded-2xl transition-all active:scale-[0.98] cursor-pointer"
+                className="w-full py-4 px-6 bg-transparent hover:bg-white/5 border border-white/20 text-[#CBD5E1] hover:text-white font-mono uppercase text-[10px] tracking-widest rounded-2xl transition-all active:scale-[0.98] cursor-pointer"
               >
                 Use Offline Guest Mode
               </button>
             </div>
-
+ 
             <div className="pt-4 border-t border-white/5 w-full text-[9px] font-mono text-gray-500 flex justify-between uppercase">
               <span>⚡ PWA Offline Cache</span>
               <span>🔒 Cloud Desync Guard</span>
             </div>
           </div>
         </motion.div>
-
+ 
         {/* Global Floating alert notifications block so that offline modes still render hints */}
         {notification && (
-          <div className="fixed bottom-6 left-1/2 transform -translate-x-1/2 z-200 bg-orange-500/90 backdrop-blur border border-orange-400 text-black font-mono text-[10px] px-4 py-2 rounded-full uppercase tracking-wider font-bold shadow-2xl">
+          <div className="fixed bottom-6 left-1/2 transform -translate-x-1/2 z-[200] bg-[#FF1F7E] border border-[#FF5B9F] text-white font-mono text-[10px] px-4 py-2 rounded-full uppercase tracking-wider font-bold shadow-2xl">
             {notification}
           </div>
         )}
@@ -1603,54 +2271,54 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-[#151619] text-white font-sans selection:bg-orange-500/30">
+    <div className="min-h-screen bg-gradient-to-b from-[#080d32] via-[#05081e] to-[#020410] text-slate-100 font-sans selection:bg-[#FF1F7E]/30">
       {/* Navigation */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-[#1a1b1e] border-t border-white/10 z-50 px-6 py-4 flex justify-around items-center">
+      <nav className="fixed bottom-0 left-0 right-0 bg-[#060921]/95 border-t border-[#FF1F7E]/35 backdrop-blur-md z-50 px-6 py-4 flex justify-around items-center shadow-[0_-8px_30px_rgb(0,0,0,0.5)]">
         <button 
           onClick={() => setActiveTab('live')}
-          className={`flex flex-col items-center gap-1 transition-colors ${activeTab === 'live' ? 'text-orange-500' : 'text-gray-500'}`}
+          className={`flex flex-col items-center gap-1 transition-colors ${activeTab === 'live' ? 'text-[#FF1F7E]' : 'text-[#CBD5E1]/60 hover:text-[#CBD5E1]'}`}
         >
-          <Zap size={24} />
+          <Zap size={24} className={activeTab === 'live' ? 'drop-shadow-[0_0_8px_#FF1F7E]' : ''} />
           <span className="text-[10px] uppercase font-mono tracking-widest">Live</span>
         </button>
         <button 
           onClick={() => setActiveTab('career')}
-          className={`flex flex-col items-center gap-1 transition-colors ${activeTab === 'career' ? 'text-orange-500' : 'text-gray-500'}`}
+          className={`flex flex-col items-center gap-1 transition-colors ${activeTab === 'career' ? 'text-[#FF1F7E]' : 'text-[#CBD5E1]/60 hover:text-[#CBD5E1]'}`}
         >
-          <Trophy size={24} />
+          <Trophy size={24} className={activeTab === 'career' ? 'drop-shadow-[0_0_8px_#FF1F7E]' : ''} />
           <span className="text-[10px] uppercase font-mono tracking-widest">Career</span>
         </button>
         <button 
           onClick={() => setActiveTab('history')}
-          className={`flex flex-col items-center gap-1 transition-colors ${activeTab === 'history' ? 'text-orange-500' : 'text-gray-500'}`}
+          className={`flex flex-col items-center gap-1 transition-colors ${activeTab === 'history' ? 'text-[#FF1F7E]' : 'text-[#CBD5E1]/60 hover:text-[#CBD5E1]'}`}
         >
-          <History size={24} />
+          <History size={24} className={activeTab === 'history' ? 'drop-shadow-[0_0_8px_#FF1F7E]' : ''} />
           <span className="text-[10px] uppercase font-mono tracking-widest">Records</span>
         </button>
         <button 
           onClick={() => setActiveTab('settings')}
-          className={`flex flex-col items-center gap-1 transition-colors ${activeTab === 'settings' ? 'text-orange-500' : 'text-gray-500'}`}
+          className={`flex flex-col items-center gap-1 transition-colors ${activeTab === 'settings' ? 'text-[#FF1F7E]' : 'text-[#CBD5E1]/60 hover:text-[#CBD5E1]'}`}
         >
-          <RotateCw size={24} />
+          <RotateCw size={24} className={activeTab === 'settings' ? 'drop-shadow-[0_0_8px_#FF1F7E]' : ''} />
           <span className="text-[10px] uppercase font-mono tracking-widest">Settings</span>
         </button>
       </nav>
 
       <main className="pb-24 pt-8 px-4 max-w-lg mx-auto">
         {/* User bar / Connection status */}
-        <div className="flex justify-between items-center bg-[#1a1b1e] border border-white/5 rounded-2xl px-4 py-3 mb-6 font-mono text-xs text-gray-400">
+        <div className="flex justify-between items-center bg-[#0D153B] border border-[#FF1F7E]/25 rounded-2xl px-4 py-3 mb-6 font-mono text-xs text-slate-300 shadow-md">
           {user ? (
             <div className="flex items-center justify-between w-full">
               <div className="flex items-center gap-2">
                 {user.photoURL ? (
-                  <img src={user.photoURL} alt="" className="w-6 h-6 rounded-full border border-orange-500/30 object-cover" referrerPolicy="no-referrer" />
+                  <img src={user.photoURL} alt="" className="w-6 h-6 rounded-full border border-[#FF1F7E]/30 object-cover" referrerPolicy="no-referrer" />
                 ) : (
-                  <div className="w-6 h-6 rounded-full bg-orange-500/20 text-orange-400 flex items-center justify-center text-[10px] font-bold">
+                  <div className="w-6 h-6 rounded-full bg-[#FF1F7E]/20 text-[#FF1F7E] flex items-center justify-center text-[10px] font-bold">
                     {user.displayName?.charAt(0).toUpperCase() || 'U'}
                   </div>
                 )}
-                <span className="text-white font-bold max-w-120px truncate text-[11px]">{user.displayName}</span>
-                <span className="text-[8px] bg-green-500/10 text-green-400 px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold">Synced</span>
+                <span className="text-white font-bold max-w-[120px] truncate text-[11px]">{user.displayName}</span>
+                <span className="text-[8px] bg-green-500/15 text-green-400 px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold border border-green-500/25">Synced</span>
               </div>
               <button 
                 onClick={handleLogout}
@@ -1673,7 +2341,7 @@ export default function App() {
                   setIsGuestMode(false);
                   setUser(null);
                 }}
-                className="text-[10px] text-orange-500 hover:text-orange-400 uppercase tracking-widest font-bold flex items-center gap-1 bg-orange-500/10 border border-orange-500/30 px-3 py-1 rounded-lg hover:bg-orange-500/20 transition-all cursor-pointer"
+                className="text-[10px] text-[#FF1F7E] hover:text-[#FF4294] uppercase tracking-widest font-bold flex items-center gap-1 bg-[#FF1F7E]/10 border border-[#FF1F7E]/35 px-3 py-1 rounded-lg hover:bg-[#FF1F7E]/20 transition-all cursor-pointer"
               >
                 Backup on Cloud
               </button>
@@ -1681,26 +2349,26 @@ export default function App() {
           )}
         </div>
         {/* Header Stat */}
-        <div className="flex justify-between items-center mb-8 border-b border-white/5 pb-4">
+        <div className="flex justify-between items-center mb-8 border-b border-[#FF1F7E]/10 pb-4">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-orange-500 rounded-full flex items-center justify-center animate-pulse">
-              <RotateCw size={20} className="text-black" />
+            <div className="w-10 h-10 bg-[#FF1F7E] rounded-full flex items-center justify-center animate-pulse shadow-md shadow-[#FF1F7E]/30">
+              <RotateCw size={20} className="text-white" />
             </div>
             <div>
-              <h1 className="text-xl font-mono tracking-tighter leading-none uppercase">
+              <h1 className="text-xl font-mono tracking-tighter leading-none uppercase text-white">
                 Infinite Loop
               </h1>
-              <p className="text-[10px] uppercase font-mono text-gray-500 mt-1 tracking-widest">Continuous Session</p>
+              <p className="text-[10px] uppercase font-mono text-slate-400 mt-1 tracking-widest">Continuous Session</p>
             </div>
           </div>
           <div className="text-right">
             <p className="text-2xl font-mono text-white">
               {match.totalRuns}/{match.totalWickets}
             </p>
-            <p className="text-[10px] uppercase font-mono text-gray-400 tracking-widest">
+            <p className="text-[10px] uppercase font-mono text-slate-300 tracking-widest">
               Score (Ex: {match.extras || 0})
             </p>
-            <p className="text-[9px] uppercase font-mono text-orange-500 tracking-widest mt-1">
+            <p className="text-[9px] uppercase font-mono text-[#FFA000] tracking-widest mt-1 font-bold">
               Active Over: 0.{match.overBalls}
             </p>
           </div>
@@ -1711,12 +2379,12 @@ export default function App() {
             <div className="flex justify-end mb-2">
               <button 
                 onClick={handleNewMatch}
-                className="px-4 py-2 border border-orange-500/30 bg-orange-500/10 text-orange-500 rounded-lg font-mono text-[10px] uppercase tracking-widest hover:bg-orange-500/20 transition-all"
+                className="px-4 py-2 border border-[#FFA000]/40 bg-[#FFA000]/10 text-[#FFA000] rounded-lg font-mono text-[10px] uppercase tracking-widest hover:bg-[#FFA000]/25 hover:border-[#FFA000] transition-all"
               >
                 Reset Session (New Match)
               </button>
             </div>
-
+ 
             {/* Undo/Redo Controls */}
             <div className="flex gap-2 mb-6">
               <button 
@@ -1728,7 +2396,7 @@ export default function App() {
                   : 'border-white/5 bg-white/2 text-gray-700 cursor-not-allowed'
                 }`}
               >
-                <RotateCw size={14} className={undoStack.length > 0 ? 'text-blue-400' : 'text-gray-700'} style={{ transform: 'scaleX(-1)' }} /> 
+                <RotateCw size={14} className={undoStack.length > 0 ? 'text-[#FF1F7E]' : 'text-gray-700'} style={{ transform: 'scaleX(-1)' }} /> 
                 Undo ({undoStack.length})
               </button>
               <button 
@@ -1741,10 +2409,10 @@ export default function App() {
                 }`}
               >
                 Redo ({redoStack.length})
-                <RotateCw size={14} className={redoStack.length > 0 ? 'text-green-400' : 'text-gray-700'} />
+                <RotateCw size={14} className={redoStack.length > 0 ? 'text-[#FF1F7E]' : 'text-gray-700'} />
               </button>
             </div>
-
+ 
             {/* Notification Toast */}
             <AnimatePresence>
               {notification && (
@@ -1752,7 +2420,7 @@ export default function App() {
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: 20 }}
-                  className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-orange-500 text-black px-6 py-3 rounded-full font-mono text-xs uppercase tracking-widest shadow-2xl z-100 flex items-center gap-2"
+                  className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-gradient-to-r from-[#FF1F7E] to-[#DF0A61] border border-[#FF5B9F]/30 text-white px-6 py-3 rounded-full font-mono text-xs uppercase tracking-widest shadow-2xl z-[100] flex items-center gap-2"
                 >
                   <AlertCircle size={14} />
                   {notification}
@@ -1765,128 +2433,157 @@ export default function App() {
               {[
                 { id: match.strikerId, label: 'Striker', active: true, key: 'strikerId' },
                 { id: match.nonStrikerId, label: 'Non-Striker', active: false, key: 'nonStrikerId' }
-              ].map((bat, idx) => (
-                <motion.div 
-                  key={idx}
-                  layout
-                  className={`relative p-6 rounded-xl border ${bat.active ? 'border-orange-500/50 bg-orange-500/5' : 'border-white/10 bg-white/5'}`}
-                >
-                  <div className="flex justify-between items-start mb-4">
-                    <div className="flex gap-4 flex-1">
-                      <div className="w-12 h-12 rounded-full overflow-hidden bg-white/10 border border-white/5 shrink-0">
-                        {players.find(p => p.id === bat.id)?.avatar ? (
-                          <img src={players.find(p => p.id === bat.id)?.avatar} alt="avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center bg-orange-500/10 text-orange-500">
-                            <User size={20} />
-                          </div>
-                        )}
-                      </div>
-                      <div className="flex-1">
-                        <span className="text-[10px] uppercase font-mono text-orange-500 tracking-widest mb-1 block">
-                          {bat.label}
-                        </span>
-                        <select 
-                          aria-label="Select Player"
-                          title='Select Player'
-                          value={bat.id}
-                          onChange={(e) => setMatch(prev => ({ ...prev, [bat.key]: Number(e.target.value) }))}
-                          className={`text-2xl font-mono tracking-tight bg-transparent border-none focus:ring-0 w-full appearance-none p-0 cursor-pointer ${bat.id === 0 ? 'text-gray-500 italic' : 'text-white'}`}
-                        >
-                          <option value={0} className="bg-[#1a1b1e]">Select Player</option>
-                          {players.map(p => (
-                            <option key={p.id} value={p.id} className="bg-[#1a1b1e]">{p.name}</option>
-                          ))}
-                        </select>
-                        {bat.id !== 0 && (
-                          <button 
-                            onClick={() => resetPlayerSession(bat.id, 'batting')}
-                            className="text-[9px] uppercase font-mono text-orange-500/60 hover:text-orange-500 mt-1 transition-colors flex items-center gap-1"
+              ].map((bat, idx) => {
+                const isStriker = bat.active;
+                return (
+                  <motion.div 
+                    key={idx}
+                    layout
+                    className={isStriker 
+                      ? "relative p-6 rounded-2xl border-0 text-white" 
+                      : "relative p-6 rounded-2xl border border-slate-400/30 bg-[#0C1235]/95 shadow-md text-slate-100"
+                    }
+                    style={isStriker ? { 
+                      backgroundColor: '#FF1F7E',
+                      boxShadow: '0 2px 25px rgba(254, 1, 154, 0.12), inset 0 0 12px rgba(255, 255, 255, 0.35)' 
+                    } : undefined}
+                  >
+                    <div className="flex justify-between items-start mb-4">
+                      <div className="flex gap-4 flex-1">
+                        <div className="w-12 h-12 rounded-full overflow-hidden bg-white/10 border border-white/10 flex-shrink-0">
+                          {players.find(p => p.id === bat.id)?.avatar ? (
+                            <img src={players.find(p => p.id === bat.id)?.avatar} alt="avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          ) : (
+                            <div className={`w-full h-full flex items-center justify-center rounded-full ${isStriker ? 'bg-white/20 text-white' : 'bg-[#FF1F7E]/10 text-[#FF1F7E]'}`}>
+                              <User size={20} />
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex-1">
+                          <span className={`text-[10px] uppercase font-mono tracking-widest mb-1 block font-bold ${isStriker ? 'text-white/90' : 'text-[#FFA000]'}`}>
+                            {bat.label}
+                          </span>
+                          <select 
+                            value={bat.id}
+                            onChange={(e) => setMatch(prev => ({ ...prev, [bat.key]: Number(e.target.value) }))}
+                            className={`text-2xl font-mono tracking-tight bg-transparent border-none focus:ring-0 w-full appearance-none p-0 cursor-pointer ${bat.id === 0 ? 'text-white/50 italic' : 'text-white font-bold'}`}
                           >
-                            <RotateCw size={10} /> Reset Session
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                    <div className="text-right ml-4">
-                      <p className="text-xl font-mono">
-                        {bat.id === 0 ? '—' : `${sessionStats[bat.id]?.batting.runs || 0} (${sessionStats[bat.id]?.batting.balls || 0})`}
-                      </p>
-                      <p className="text-[8px] uppercase font-mono text-gray-500 mt-1">Live Score</p>
-                    </div>
-                  </div>
-
-                  {bat.active && bat.id !== 0 && (
-                    <div className="grid grid-cols-4 gap-2 mt-4">
-                      {[0, 'WICKET', 1, 2, 3, 4, 6].map(r => {
-                        if (r === 'WICKET') {
-                          return (
-                            <button
-                              key="wicket"
-                              onClick={() => handleWicket(bat.id)}
-                              className="py-3 bg-red-600 hover:bg-red-700 text-white rounded-lg font-mono text-[10px] font-bold transition-all active:scale-95 flex flex-col items-center justify-center gap-1 shadow-lg shadow-red-900/20"
+                            <option value={0} className="bg-[#0C1235]">Select Player</option>
+                            {players.map(p => (
+                              <option key={p.id} value={p.id} className="bg-[#0C1235]">{p.name}</option>
+                            ))}
+                          </select>
+                          {bat.id !== 0 && (
+                            <button 
+                              onClick={() => resetPlayerSession(bat.id, 'batting')}
+                              className={`text-[9px] uppercase font-mono mt-1 transition-colors flex items-center gap-1 ${isStriker ? 'text-white/75 hover:text-white' : 'text-[#FFA000]/70 hover:text-[#FFA000]'}`}
                             >
-                              <Skull size={14} /> WICKET
+                              <RotateCw size={10} /> Reset Session
                             </button>
-                          );
-                        }
-                        return (
-                          <button
-                            key={r}
-                            onClick={() => handleScore(Number(r))}
-                            className="py-3 bg-white/10 hover:bg-white/20 rounded-lg font-mono text-lg transition-all active:scale-95"
-                          >
-                            {r === 0 ? 'Dot' : `+${r}`}
-                          </button>
-                        );
-                      })}
+                          )}
+                        </div>
+                      </div>
+                      <div className="text-right ml-4">
+                        <p className="text-xl font-mono font-bold">
+                          {bat.id === 0 ? '—' : `${sessionStats[bat.id]?.batting.runs || 0} (${sessionStats[bat.id]?.batting.balls || 0})`}
+                        </p>
+                        <p className={`text-[8px] uppercase font-mono mt-1 ${isStriker ? 'text-white/80' : 'text-slate-400'}`}>Live Score</p>
+                      </div>
                     </div>
-                  )}
-
-                  {/* Removed absolute OUT button to use grid-based red button */}
-                </motion.div>
-              ))}
+ 
+                    {isStriker && bat.id !== 0 && (
+                      <>
+                        <div className="grid grid-cols-4 gap-2 mt-4">
+                          {[0, 'WICKET', 1, 2, 3, 4, 6].map(r => {
+                            if (r === 'WICKET') {
+                              return (
+                                <button
+                                  key="wicket"
+                                  onClick={() => handleWicket(bat.id)}
+                                  className="py-2 bg-[#E0E0E0] hover:bg-white text-[#FF0000] rounded-lg font-mono text-[10px] font-extrabold transition-all active:scale-95 flex flex-col items-center justify-center gap-1 shadow-md shadow-black/10 border border-[#E0E0E0]"
+                                >
+                                  <Skull size={15} className="text-[#FF0000]" />
+                                  <span className="leading-none uppercase tracking-wider text-[#FF0000]">WICKET</span>
+                                </button>
+                              );
+                            }
+                            if (r === 0) {
+                              return (
+                                <button
+                                  key="dot"
+                                  onClick={() => handleScore(0)}
+                                  className="py-2 bg-[#008000] hover:bg-[#009900] text-white rounded-lg font-mono transition-all active:scale-95 shadow-[inset_0_1px_3px_rgba(255,255,255,0.4)] border border-[#006600]/30 flex flex-col items-center justify-center gap-1"
+                                >
+                                  <Sprout size={16} className="text-white" />
+                                  <span className="text-[10px] tracking-wider uppercase font-extrabold leading-none">Dot</span>
+                                </button>
+                              );
+                            }
+                            return (
+                              <button
+                                key={r}
+                                onClick={() => handleScore(Number(r))}
+                                className="py-3 bg-[#0B132B] hover:bg-[#142047] text-white border border-white/10 rounded-lg font-mono text-lg font-extrabold transition-all active:scale-95 shadow-[inset_0_1px_3px_rgba(255,255,255,0.15)] flex items-center justify-center"
+                              >
+                                +{r}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <button
+                          onClick={handleInningsEnd}
+                          className="w-full mt-4 py-3 bg-[#080D32] hover:bg-[#12194B] text-white border border-white/10 rounded-xl font-mono text-xs uppercase tracking-widest font-bold transition-all shadow-md active:scale-95 flex items-center justify-center gap-2 hover:border-[#FF1F7E]/30"
+                        >
+                          <Trophy size={14} className="text-[#FF1F7E]" />
+                          Innings End (Remain Not Out)
+                        </button>
+                      </>
+                    )}
+ 
+                    {/* Removed absolute OUT button to use grid-based red button */}
+                  </motion.div>
+                );
+              })}
             </div>
 
             {/* Controls */}
             <div className="grid grid-cols-2 gap-4">
               <button 
                 onClick={rotateStrike}
-                className="flex items-center justify-center gap-2 py-4 bg-white/5 hover:bg-white/10 rounded-xl border border-white/10 font-mono text-xs uppercase tracking-widest transition-all"
+                className="flex items-center justify-center gap-2 py-4 bg-[#0D153B]/65 hover:bg-[#131E54]/85 rounded-xl border border-[#FF1F7E]/20 hover:border-[#FF1F7E]/45 font-mono text-xs uppercase tracking-widest transition-all text-white shadow-md cursor-pointer"
               >
-                <RotateCw size={14} className="text-orange-500" /> Rotate Strike
+                <RotateCw size={14} className="text-[#FF1F7E]" /> Rotate Strike
               </button>
               <button 
                 onClick={emergencySwap}
-                className="flex items-center justify-center gap-2 py-4 bg-white/5 hover:bg-white/10 rounded-xl border border-white/10 font-mono text-xs uppercase tracking-widest transition-all"
+                className="flex items-center justify-center gap-2 py-4 bg-[#0D153B]/65 hover:bg-[#131E54]/85 rounded-xl border border-[#FF1F7E]/20 hover:border-[#FF1F7E]/45 font-mono text-xs uppercase tracking-widest transition-all text-white shadow-md cursor-pointer"
               >
-                <AlertCircle size={14} className="text-red-500" /> Swap Bowler
+                <AlertCircle size={14} className="text-red-400" /> Swap Bowler
               </button>
             </div>
-
+ 
             {/* Bowler Section */}
-            <div className="p-6 rounded-xl border border-dashed border-white/20 bg-white/5">
+            <div className="p-6 rounded-xl border border-dashed border-[#FF1F7E]/30 bg-[#0C1235]/95 shadow-md">
               <div className="flex justify-between items-center mb-6">
                 <div className="flex gap-4 flex-1">
-                  <div className="w-12 h-12 rounded-full overflow-hidden bg-white/10 border border-white/5 shrink-0">
+                  <div className="w-12 h-12 rounded-full overflow-hidden bg-white/10 border border-white/10 flex-shrink-0">
                     {players.find(p => p.id === match.bowlerId)?.avatar ? (
                       <img src={players.find(p => p.id === match.bowlerId)?.avatar} alt="avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                     ) : (
-                      <div className="w-full h-full flex items-center justify-center bg-blue-500/10 text-blue-400">
+                      <div className="w-full h-full flex items-center justify-center bg-[#FF1F7E]/10 text-[#FF1F7E] rounded-full">
                         <User size={20} />
                       </div>
                     )}
                   </div>
                   <div className="flex-1">
-                    <span className="text-[10px] uppercase font-mono text-gray-500 tracking-widest mb-1 block">Current Bowler</span>
+                    <span className="text-[10px] uppercase font-mono text-slate-400 tracking-widest mb-1 block">Current Bowler</span>
                     <select 
-                      aria-label='Select Player'
                       value={match.bowlerId}
                       onChange={(e) => setMatch(prev => ({ ...prev, bowlerId: Number(e.target.value) }))}
-                      className="text-xl font-mono bg-transparent border-none focus:ring-0 w-full appearance-none text-white p-0 cursor-pointer"
+                      className="text-xl font-mono bg-transparent border-none focus:ring-0 w-full appearance-none text-white p-0 cursor-pointer font-bold"
                     >
                       {players.map(p => (
-                        <option key={p.id} value={p.id} className="bg-[#1a1b1e]">{p.name}</option>
+                        <option key={p.id} value={p.id} className="bg-[#0C1235]">{p.name}</option>
                       ))}
                     </select>
                     <div className="flex items-center gap-3 mt-1">
@@ -1895,16 +2592,16 @@ export default function App() {
                           resetPlayerSession(match.bowlerId, 'bowling');
                           setMatch(prev => ({ ...prev, overBalls: 0, currentOver: [] }));
                         }}
-                        className="text-[9px] uppercase font-mono text-gray-500 hover:text-white transition-colors flex items-center gap-1"
+                        className="text-[9px] uppercase font-mono text-[#FFA000]/70 hover:text-[#FFA000] transition-colors flex items-center gap-1"
                       >
                         <RotateCw size={10} /> Reset Session
                       </button>
                     </div>
                     <div className="flex gap-3 mt-2">
-                      <span className="text-[10px] font-mono text-blue-400 uppercase tracking-wider">
+                      <span className="text-[10px] font-mono text-[#FF1F7E] uppercase tracking-wider font-bold">
                         Wkts: {sessionStats[match.bowlerId]?.bowling.wickets || 0}
                       </span>
-                      <span className="text-[10px] font-mono text-gray-500 uppercase tracking-wider">
+                      <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider">
                         Eco: {((sessionStats[match.bowlerId]?.bowling.runs || 0) / (sessionStats[match.bowlerId]?.bowling.balls || 1) * 6).toFixed(1)}
                       </span>
                     </div>
@@ -1912,34 +2609,184 @@ export default function App() {
                 </div>
                 <div className="flex gap-2">
                   <button 
-                    onClick={() => handleExtra('wide')}
-                    className="px-4 py-2 bg-white/10 rounded-lg font-mono text-sm uppercase"
+                    onClick={() => setExtraModal({ isOpen: true, type: 'wide' })}
+                    className="px-4 py-2 bg-[#080D32] hover:bg-[#FF1F7E]/20 hover:text-white border border-white/10 rounded-lg font-mono text-sm uppercase text-slate-100 font-bold transition-all shadow-sm"
                   >
                     WD
                   </button>
                   <button 
-                    onClick={() => handleExtra('noball')}
-                    className="px-4 py-2 bg-white/10 rounded-lg font-mono text-sm uppercase"
+                    onClick={() => setExtraModal({ isOpen: true, type: 'noball' })}
+                    className="px-4 py-2 bg-[#080D32] hover:bg-[#FF1F7E]/20 hover:text-white border border-white/10 rounded-lg font-mono text-sm uppercase text-slate-100 font-bold transition-all shadow-sm"
                   >
                     NB
                   </button>
+                  <button 
+                    onClick={() => setExtraModal({ isOpen: true, type: 'lb' })}
+                    className="px-4 py-2 bg-[#080D32] hover:bg-[#FF1F7E]/20 hover:text-white border border-white/10 rounded-lg font-mono text-sm uppercase text-slate-100 font-bold transition-all shadow-sm"
+                  >
+                    LB
+                  </button>
+                  <button 
+                    onClick={() => setExtraModal({ isOpen: true, type: 'by' })}
+                    className="px-4 py-2 bg-[#080D32] hover:bg-[#FF1F7E]/20 hover:text-white border border-white/10 rounded-lg font-mono text-sm uppercase text-slate-100 font-bold transition-all shadow-sm"
+                  >
+                    B
+                  </button>
                 </div>
               </div>
-
+ 
               <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none">
-                {match.currentOver.map((ball, i) => (
-                  <div key={i} className={`min-w-40px h-10 px-1 flex items-center justify-center rounded-full font-mono text-sm ${
-                    (ball === 'W' || (typeof ball === 'string' && ball.includes('W'))) ? 'bg-red-500/20 text-red-400 border border-red-500/30 font-bold' :
-                    (typeof ball === 'string' && (ball.includes('wd') || ball.includes('NB'))) ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' :
-                    'bg-white/10 text-white'
-                  }`}>
-                    {ball}
-                  </div>
-                ))}
+                {match.currentOver.map((ball, i) => {
+                  const isDot = ball === 0 || ball === '0';
+                  const isWD = typeof ball === 'string' && ball.toLowerCase().includes('wd');
+                  const isNB = typeof ball === 'string' && ball.toLowerCase().includes('nb');
+                  const isLB = typeof ball === 'string' && ball.toUpperCase().includes('LB');
+                  const isBY = typeof ball === 'string' && (ball.toUpperCase().startsWith('B') && !ball.toUpperCase().includes('LB') && !ball.toUpperCase().includes('NB') && !ball.toUpperCase().startsWith('W'));
+                  const isWicket = !isWD && !isNB && !isLB && !isBY && (ball === 'W' || (typeof ball === 'string' && ball.toUpperCase().includes('W')));
+                  const isBoundary = (ball === 4 || ball === 6 || ball === '4' || ball === '6') && !isWD && !isNB && !isLB && !isBY && !isWicket;
+
+                  if (isDot) {
+                    return (
+                      <div 
+                        key={i} 
+                        className="min-w-[40px] h-10 rounded-full flex items-center justify-center bg-[#008000] shadow-md border-0"
+                        title="Dot Ball"
+                      >
+                        <Sprout size={14} className="text-white" />
+                      </div>
+                    );
+                  }
+
+                  if (isWD) {
+                    let displayText = String(ball).toUpperCase();
+                    if (displayText === '1WD') {
+                      displayText = 'WD';
+                    }
+                    const isMultiChar = displayText.length > 2;
+                    return (
+                      <div 
+                        key={i} 
+                        className="min-w-[40px] h-10 rounded-full flex items-center justify-center bg-[#FFFFFF] shadow-md border-0"
+                        title="Wide Ball"
+                      >
+                        <span 
+                          className="font-mono text-[#0B132B] uppercase tracking-tight leading-none"
+                          style={{ fontWeight: '800', fontSize: isMultiChar ? '9px' : '11px' }}
+                        >
+                          {displayText}
+                        </span>
+                      </div>
+                    );
+                  }
+
+                  if (isNB) {
+                    let displayText = String(ball).toUpperCase();
+                    if (displayText === '1NB') {
+                      displayText = 'NB';
+                    }
+                    const isMultiChar = displayText.length > 2;
+                    return (
+                      <div 
+                        key={i} 
+                        className="min-w-[40px] h-10 rounded-full flex items-center justify-center bg-[#FFFFFF] shadow-md border-0"
+                        title="No Ball"
+                      >
+                        <span 
+                          className="font-mono text-[#0B132B] uppercase tracking-tight leading-none"
+                          style={{ fontWeight: '800', fontSize: isMultiChar ? '9px' : '11px' }}
+                        >
+                          {displayText}
+                        </span>
+                      </div>
+                    );
+                  }
+
+                  if (isLB || isBY) {
+                    const displayText = String(ball).toUpperCase();
+                    const isMultiChar = displayText.length > 2;
+                    return (
+                      <div 
+                        key={i} 
+                        className="min-w-[40px] h-10 rounded-full flex items-center justify-center bg-[#FFFFFF] shadow-md border-0"
+                        title={isLB ? "Leg Bye" : "Bye"}
+                      >
+                        <span 
+                          className="font-mono text-[#0B132B] uppercase tracking-tight leading-none"
+                          style={{ 
+                            fontWeight: 'bold', 
+                            fontSize: isMultiChar ? '10px' : '12px' 
+                          }}
+                        >
+                          {displayText}
+                        </span>
+                      </div>
+                    );
+                  }
+
+                  if (isWicket) {
+                    return (
+                      <div 
+                        key={i} 
+                        className="min-w-[40px] h-10 rounded-full flex items-center justify-center bg-[#FF0000] shadow-md border-0"
+                        title="Wicket"
+                      >
+                        <span 
+                          className="font-mono text-[#0B132B] uppercase tracking-tight leading-none"
+                          style={{ fontWeight: '800', fontSize: '14px' }}
+                        >
+                          W
+                        </span>
+                      </div>
+                    );
+                  }
+
+                  if (isBoundary) {
+                    return (
+                      <div 
+                        key={i} 
+                        className="min-w-[40px] h-10 rounded-full flex items-center justify-center bg-[#FF8C00] shadow-md border-0"
+                        title={`Boundary ${ball}`}
+                      >
+                        <span 
+                          className="font-mono text-[#0B132B] uppercase tracking-tight leading-none"
+                          style={{ fontWeight: '800', fontSize: '14px' }}
+                        >
+                          {ball}
+                        </span>
+                      </div>
+                    );
+                  }
+
+                  // Other deliveries (1, 2, 3 runs, etc.)
+                  const displayText = String(ball).toUpperCase();
+                  const isMultiChar = displayText.length > 1;
+
+                  return (
+                    <div 
+                      key={i} 
+                      className="min-w-[40px] h-10 rounded-full flex items-center justify-center bg-[#FFFFFF] shadow-md border-0"
+                      title={`Runs ${ball}`}
+                    >
+                      <span 
+                        className="font-mono text-[#0B132B] uppercase tracking-tight leading-none"
+                        style={{ 
+                          fontWeight: '800', 
+                          fontSize: isMultiChar ? '11px' : '14px' 
+                        }}
+                      >
+                        {displayText}
+                      </span>
+                    </div>
+                  );
+                })}
                 {(() => {
-                  const legalBalls = match.currentOver.filter(b => typeof b === 'number' || b === 'W' || (typeof b === 'string' && b.includes('+W'))).length;
+                  const legalBalls = match.currentOver.filter(b => {
+                    if (typeof b === 'number') return true;
+                    const bStr = String(b).toUpperCase();
+                    return !bStr.includes('WD') && !bStr.includes('NB');
+                  }).length;
                   return Array.from({ length: Math.max(0, 6 - legalBalls) }).map((_, i) => (
-                    <div key={i} className="min-w-40px h-10 flex items-center justify-center border border-dashed border-white/10 rounded-full font-mono text-sm text-white/20">
+                    <div key={i} className="min-w-[40px] h-10 flex items-center justify-center border border-dashed border-white/10 rounded-full font-mono text-sm text-white/20">
                       •
                     </div>
                   ));
@@ -1949,32 +2796,855 @@ export default function App() {
           </div>
         )}
 
-        {activeTab === 'career' && (
+        {activeTab === 'career' && isProfileOpen && selectedPlayerId !== null && (() => {
+          const p = players.find(x => x.id === selectedPlayerId);
+          if (!p) return null;
+          const s = getPlayerStats(p.id);
+          const activeStats = (isEditingProfile && editCareerStats) ? editCareerStats : s;
+          
+          // calculate age:
+          const ageText = (() => {
+            if (!p.dob) return "N/A";
+            const birthDate = new Date(p.dob);
+            if (isNaN(birthDate.getTime())) return "N/A";
+            const today = new Date();
+            let years = today.getFullYear() - birthDate.getFullYear();
+            const birthMonth = birthDate.getMonth();
+            const todayMonth = today.getMonth();
+            if (todayMonth < birthMonth || (todayMonth === birthMonth && today.getDate() < birthDate.getDate())) {
+              years--;
+            }
+            const lastBirthday = new Date(birthDate);
+            lastBirthday.setFullYear(today.getFullYear());
+            if (lastBirthday > today) {
+              lastBirthday.setFullYear(today.getFullYear() - 1);
+            }
+            const diffTime = Math.abs(today.getTime() - lastBirthday.getTime());
+            const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+            return `${years} Years, ${diffDays} Days`;
+          })();
+
+          // calculate performance rating:
+          const ratingText = (() => {
+            let battingScore = 5.0;
+            let bowlingScore = 5.0;
+            let hasBatting = activeStats.inningsBat > 0 || activeStats.ballsFaced > 0 || activeStats.runs > 0;
+            let hasBowling = activeStats.ballsBowled > 0;
+
+            if (hasBatting) {
+              const avg = activeStats.runs / Math.max(1, activeStats.inningsBat);
+              const sr = activeStats.ballsFaced > 0 ? (activeStats.runs / activeStats.ballsFaced) * 100 : 0;
+              battingScore += Math.min(3.5, avg * 0.1); 
+              if (sr > 0) {
+                battingScore += Math.max(-1.5, Math.min(2.0, (sr - 100) / 40));
+              }
+              battingScore += Math.min(2.0, ((activeStats.fifties || 0) * 0.4) + ((activeStats.hundreds || 0) * 1.0));
+              if (activeStats.highestScore >= 100) battingScore += 0.5;
+              else if (activeStats.highestScore >= 50) battingScore += 0.25;
+            }
+
+            if (hasBowling) {
+              const econ = activeStats.ballsBowled > 0 ? (activeStats.runsConceded / activeStats.ballsBowled) * 6 : 0;
+              const dotPct = activeStats.ballsBowled > 0 ? ((activeStats.dots || 0) / activeStats.ballsBowled) * 100 : 0;
+              if (econ > 0) {
+                if (econ < 6.0) bowlingScore += 2.5;
+                else if (econ < 8.0) bowlingScore += 1.5;
+                else if (econ > 10.0) bowlingScore -= 1.0;
+              }
+              if (activeStats.wickets > 0) {
+                const bowlAvg = activeStats.runsConceded / activeStats.wickets;
+                if (bowlAvg < 15) bowlingScore += 2.0;
+                else if (bowlAvg < 25) bowlingScore += 1.0;
+                
+                const bowlSR = activeStats.ballsBowled / activeStats.wickets;
+                if (bowlSR < 15) bowlingScore += 1.0;
+                else if (bowlSR < 24) bowlingScore += 0.5;
+              }
+              if (dotPct > 45) bowlingScore += 1.0;
+              else if (dotPct > 35) bowlingScore += 0.5;
+              if ((activeStats.hatTricks || 0) > 0) bowlingScore += 0.5;
+            }
+
+            let finalRating = 5.0;
+            if (hasBatting && hasBowling) {
+              const best = Math.max(battingScore, bowlingScore);
+              const worst = Math.min(battingScore, bowlingScore);
+              finalRating = (best * 0.7) + (worst * 0.3);
+            } else if (hasBatting) {
+              finalRating = battingScore;
+            } else if (hasBowling) {
+              finalRating = bowlingScore;
+            }
+            finalRating = Math.max(1.0, Math.min(10.0, finalRating));
+            return finalRating.toFixed(1);
+          })();
+
+          const handleSaveProfile = async () => {
+            if (!editProfileName.trim()) {
+              setNotification("Name cannot be empty");
+              return;
+            }
+            
+            // 1. Update local states
+            setPlayers(prev => prev.map(x => x.id === p.id ? {
+              ...x,
+              name: editProfileName,
+              jerseyNo: editProfileJersey ? Number(editProfileJersey) : undefined,
+              dob: editProfileDob || undefined
+            } : x));
+
+            if (editCareerStats) {
+              setCareerStats(prev => ({
+                ...prev,
+                [p.id]: {
+                  ...editCareerStats
+                }
+              }));
+            }
+
+            // 2. Synced write: Push to Firestore player document if user is logged in
+            if (user) {
+              try {
+                const finalCareerStats = editCareerStats || s;
+                const pathStr = `users/${user.uid}/players/${p.id}`;
+                const payload = {
+                  id: p.id,
+                  name: editProfileName,
+                  jerseyNo: editProfileJersey ? Number(editProfileJersey) : null,
+                  dob: editProfileDob || null,
+                  careerStats: {
+                    inningsBat: Math.max(0, Number(finalCareerStats.inningsBat) || 0),
+                    runs: Math.max(0, Number(finalCareerStats.runs) || 0),
+                    ballsFaced: Math.max(0, Number(finalCareerStats.ballsFaced) || 0),
+                    highestScore: Math.max(0, Number(finalCareerStats.highestScore) || 0),
+                    fifties: Math.max(0, Number(finalCareerStats.fifties) || 0),
+                    hundreds: Math.max(0, Number(finalCareerStats.hundreds) || 0),
+                    fours: Math.max(0, Number(finalCareerStats.fours) || 0),
+                    sixes: Math.max(0, Number(finalCareerStats.sixes) || 0),
+                    notOuts: Math.max(0, Number(finalCareerStats.notOuts) || 0),
+                    ballsBowled: Math.max(0, Number(finalCareerStats.ballsBowled) || 0),
+                    wickets: Math.max(0, Number(finalCareerStats.wickets) || 0),
+                    hatTricks: Math.max(0, Number(finalCareerStats.hatTricks) || 0),
+                    runsConceded: Math.max(0, Number(finalCareerStats.runsConceded) || 0),
+                    dots: Math.max(0, Number(finalCareerStats.dots) || 0),
+                    inningsBowl: Math.max(0, Number(finalCareerStats.inningsBowl) || 0),
+                    wicketStreak: Math.max(0, Number(finalCareerStats.wicketStreak) || 0),
+                    bestBowling: {
+                      wickets: Math.max(0, Number(finalCareerStats.bestBowling?.wickets) || 0),
+                      runs: Math.max(0, Number(finalCareerStats.bestBowling?.runs) || 0)
+                    },
+                    catches: Math.max(0, Number(finalCareerStats.catches) || 0),
+                    runOuts: Math.max(0, Number(finalCareerStats.runOuts) || Number(finalCareerStats.throwComplete) || 0),
+                    throwComplete: Math.max(0, Number(finalCareerStats.throwComplete) || Number(finalCareerStats.runOuts) || 0),
+                    stumpings: Math.max(0, Number(finalCareerStats.stumpings) || 0),
+                    catchDrop: Math.max(0, Number(finalCareerStats.catchDrop) || 0),
+                    missField: Math.max(0, Number(finalCareerStats.missField) || 0),
+                    missedThrows: Math.max(0, Number(finalCareerStats.missedThrows) || 0)
+                  },
+                  updatedAt: new Date().toISOString()
+                };
+
+                const playerRef = doc(db, 'users', user.uid, 'players', String(p.id));
+                try {
+                  await setDoc(playerRef, payload);
+                } catch (writeError) {
+                  // Fall back through custom error handler to produce a standard diagnostic report
+                  handleFirestoreError(writeError, OperationType.WRITE, pathStr);
+                }
+                
+                setNotification("Profile & Firestore Stats saved successfully");
+              } catch (error) {
+                console.error("Firestore sync failed", error);
+                setNotification("Local stats saved, but Firestore sync failed: " + (error instanceof Error ? error.message : String(error)));
+              }
+            } else {
+              setNotification("Profile saved locally");
+            }
+
+            setIsEditingProfile(false);
+          };
+
+          return (
+            <div className="space-y-6 animate-in fade-in duration-300">
+              {/* Header / Top Navigation Bar */}
+              <div className="flex items-center justify-between bg-white/5 border border-white/10 rounded-2xl p-4 shadow-lg">
+                <button
+                  onClick={() => setIsProfileOpen(false)}
+                  className="flex items-center gap-2 hover:bg-white/10 rounded-xl px-3 py-2 text-sm text-gray-300 hover:text-white transition-all font-mono"
+                >
+                  <ArrowLeft size={16} />
+                  <span>Back</span>
+                </button>
+                
+                <h2 className="text-base font-mono uppercase tracking-wider text-white">
+                  {isEditingProfile ? "Edit Profile" : "Player Profile"}
+                </h2>
+
+                <div className="flex gap-2">
+                  {isEditingProfile ? (
+                    <>
+                      <button
+                        onClick={handleSaveProfile}
+                        className="flex items-center gap-1 bg-green-500/25 hover:bg-green-500/40 border border-green-500/40 rounded-xl px-3 py-2 text-xs font-mono font-bold text-green-400 transition-all"
+                      >
+                        <Save size={14} />
+                        <span>Save</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          setIsEditingProfile(false);
+                          setEditCareerStats(null);
+                          setEditProfileName(p.name);
+                          setEditProfileJersey(p.jerseyNo ? String(p.jerseyNo) : "");
+                          setEditProfileDob(p.dob || "");
+                        }}
+                        className="flex items-center gap-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-gray-400 hover:text-white transition-all"
+                      >
+                        <X size={14} />
+                        <span>Cancel</span>
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        setIsEditingProfile(true);
+                        setEditCareerStats({ ...s });
+                      }}
+                      className="flex items-center gap-1 bg-[#FF1F7E]/15 hover:bg-[#FF1F7E]/30 border border-[#FF1F7E]/45 rounded-xl px-3 py-2 text-xs font-mono font-bold text-[#FF1F7E] transition-all animate-in fade-in cursor-pointer animate-duration-200"
+                    >
+                      <Pencil size={14} />
+                      <span>Edit Profile</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+ 
+              {/* Profile Info Card Section */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {/* Left Profile Details Column */}
+                <div className="md:col-span-1 bg-[#0D153B] border border-[#FF1F7E]/20 rounded-2xl p-6 flex flex-col items-center justify-between shadow-lg relative overflow-hidden">
+                  {/* Background Glow */}
+                  <div className="absolute top-0 right-0 w-24 h-24 bg-[#FF1F7E]/10 rounded-full blur-2xl pointer-events-none" />
+                  
+                  <div className="w-full flex flex-col items-center">
+                    {/* Avatar / Jersey Badge */}
+                    <div className="relative w-28 h-28 mb-4">
+                      <div className="w-full h-full rounded-full bg-gradient-to-br from-[#FF1F7E]/25 to-[#0C1235]/25 border-2 border-[#FF1F7E]/35 overflow-hidden flex items-center justify-center text-4xl font-mono text-white select-none animate-in zoom-in duration-300">
+                        {p.avatar ? (
+                          <img src={p.avatar} alt={p.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        ) : (
+                          p.name.charAt(0).toUpperCase()
+                        )}
+                      </div>
+                      
+                      {/* Jersey Badge */}
+                      <div className="absolute -bottom-1 -right-1 flex items-center justify-center w-9 h-9 rounded-full bg-gradient-to-r from-[#FF1F7E] to-[#DF0A61] text-white border border-pink-400/40 shadow-lg shadow-pink-500/20">
+                        <span className="text-xs font-mono font-extrabold flex items-center">
+                          <Hash size={10} className="mr-[1px]" />
+                          {p.jerseyNo !== undefined ? p.jerseyNo : "—"}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Profile Info Edit Form vs Read Only view */}
+                     {isEditingProfile ? (
+                      <div className="w-full space-y-4 font-mono text-xs">
+                        <div>
+                          <label className="text-gray-400 block mb-1 uppercase tracking-wider text-[10px]">Name</label>
+                          <input
+                            type="text"
+                            value={editProfileName}
+                            onChange={(e) => setEditProfileName(e.target.value)}
+                            className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-[#FF1F7E]/50 transition-colors"
+                            placeholder="Player Name"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-gray-400 block mb-1 uppercase tracking-wider text-[10px]">Jersey No</label>
+                          <input
+                            type="number"
+                            value={editProfileJersey}
+                            onChange={(e) => setEditProfileJersey(e.target.value)}
+                            className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-[#FF1F7E]/50 transition-colors"
+                            placeholder="e.g. 7"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-gray-400 block mb-1 uppercase tracking-wider text-[10px]">Date of Birth</label>
+                          <input
+                            type="date"
+                            value={editProfileDob}
+                            onChange={(e) => setEditProfileDob(e.target.value)}
+                            className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-[#FF1F7E]/50 transition-colors"
+                          />
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-center w-full">
+                        <h3 className="text-xl font-mono font-bold text-white tracking-tight">{p.name}</h3>
+                        <div className="text-xs font-mono text-gray-400 mt-1 uppercase tracking-widest flex items-center justify-center gap-1.5">
+                          <Calendar size={12} className="text-orange-500" />
+                          {p.dob ? `DOB: ${p.dob}` : "DOB: Not Set"}
+                        </div>
+                        
+                        {/* Dynamic Age Counter */}
+                        <div className="mt-2 text-xs font-mono font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1 rounded-lg inline-block">
+                          {p.dob ? ageText : "Age: Unknown"}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="w-full mt-6 border-t border-white/5 pt-4 text-center">
+                    <span className="text-[10px] uppercase font-mono tracking-[0.2em] text-gray-400 block mb-1.5">Performance Rating</span>
+                    <div className="inline-flex items-center gap-1.5 bg-yellow-500/10 border border-yellow-500/20 text-yellow-500 font-mono font-extrabold text-sm px-4 py-2 rounded-xl">
+                      <Star size={14} className="fill-yellow-500 animate-pulse" />
+                      Rating: {ratingText}/10
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right Detailed Stats Blocks (2 columns wide on desktop) */}
+                <div className="md:col-span-2 space-y-6">
+                  {(() => {
+                    const battingAverage = (() => {
+                      const runs = activeStats.runs || 0;
+                      const innings = activeStats.inningsBat || 0;
+                      const notOuts = activeStats.notOuts || 0;
+                      const divisor = innings - notOuts;
+                      if (divisor <= 0) {
+                        return innings > 0 ? runs.toFixed(2) : "-";
+                      }
+                      return (runs / divisor).toFixed(2);
+                    })();
+
+                    const fieldingAccuracy = (() => {
+                      const catches = activeStats.catches || 0;
+                      const runOuts = activeStats.runOuts || 0;
+                      const catchDrop = activeStats.catchDrop || 0;
+                      const missField = activeStats.missField || 0;
+                      const missedThrows = activeStats.missedThrows || 0;
+                      const divisor = catches + runOuts + catchDrop + missField + missedThrows;
+                      if (divisor === 0) return "-";
+                      return (((catches + runOuts) / divisor) * 100).toFixed(1) + "%";
+                    })();
+
+                    return (
+                      <>
+                        {/* Batting Record Block */}
+                        <div className="bg-white/5 border border-white/10 rounded-2xl p-5 shadow-lg space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+                          <div className="flex items-center gap-2 border-b border-white/5 pb-2">
+                            <Sword size={16} className="text-orange-500" />
+                            <h4 className="text-xs font-mono uppercase tracking-[0.2em] text-gray-300">Batting Career Stats</h4>
+                          </div>
+                          
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block">Innings</span>
+                              {isEditingProfile ? (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={activeStats.inningsBat || 0}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, Number(e.target.value) || 0);
+                                    setEditCareerStats(prev => prev ? { ...prev, inningsBat: val } : null);
+                                  }}
+                                  className="w-full bg-white/5 text-center border border-white/10 rounded-lg px-2 py-1 mt-1 font-mono text-sm text-white focus:outline-none focus:border-orange-500"
+                                />
+                              ) : (
+                                <span className="text-lg font-mono font-bold text-white mt-1">{activeStats.inningsBat || 0}</span>
+                              )}
+                            </div>
+
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block">Not Outs</span>
+                              {isEditingProfile ? (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={activeStats.notOuts || 0}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, Number(e.target.value) || 0);
+                                    setEditCareerStats(prev => prev ? { ...prev, notOuts: val } : null);
+                                  }}
+                                  className="w-full bg-white/5 text-center border border-white/10 rounded-lg px-2 py-1 mt-1 font-mono text-sm text-white focus:outline-none focus:border-orange-500"
+                                />
+                              ) : (
+                                <span className="text-lg font-mono font-bold text-neutral-300 mt-1">{activeStats.notOuts || 0}</span>
+                              )}
+                            </div>
+
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block">Total Runs</span>
+                              {isEditingProfile ? (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={activeStats.runs || 0}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, Number(e.target.value) || 0);
+                                    setEditCareerStats(prev => prev ? { ...prev, runs: val } : null);
+                                  }}
+                                  className="w-full bg-white/5 text-center border border-white/10 rounded-lg px-2 py-1 mt-1 font-mono text-sm text-orange-400 focus:outline-none focus:border-orange-500"
+                                />
+                              ) : (
+                                <span className="text-lg font-mono font-bold text-orange-400 mt-1">{activeStats.runs || 0}</span>
+                              )}
+                            </div>
+
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block">Average</span>
+                              <span className="text-lg font-mono font-bold text-orange-500 mt-1">{battingAverage}</span>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block">Strike Rate</span>
+                              <span className="text-lg font-mono font-bold text-white mt-1">
+                                {activeStats.ballsFaced > 0 ? ((activeStats.runs / activeStats.ballsFaced) * 100).toFixed(1) : "0.0"}
+                              </span>
+                            </div>
+
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block">Balls Faced</span>
+                              {isEditingProfile ? (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={activeStats.ballsFaced || 0}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, Number(e.target.value) || 0);
+                                    setEditCareerStats(prev => prev ? { ...prev, ballsFaced: val } : null);
+                                  }}
+                                  className="w-full bg-white/5 text-center border border-white/10 rounded-lg px-2 py-1 mt-1 font-mono text-sm text-white focus:outline-none focus:border-orange-500"
+                                />
+                              ) : (
+                                <span className="text-lg font-mono font-bold text-white mt-1">{activeStats.ballsFaced || 0}</span>
+                              )}
+                            </div>
+
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block">Best Score</span>
+                              {isEditingProfile ? (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={activeStats.highestScore || 0}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, Number(e.target.value) || 0);
+                                    setEditCareerStats(prev => prev ? { ...prev, highestScore: val } : null);
+                                  }}
+                                  className="w-full bg-white/5 text-center border border-white/10 rounded-lg px-2 py-1 mt-1 font-mono text-sm text-white focus:outline-none focus:border-orange-500"
+                                />
+                              ) : (
+                                <span className="text-lg font-mono font-bold text-white mt-1">{activeStats.highestScore || 0}</span>
+                              )}
+                            </div>
+
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block">Fours (4s)</span>
+                              {isEditingProfile ? (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={activeStats.fours || 0}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, Number(e.target.value) || 0);
+                                    setEditCareerStats(prev => prev ? { ...prev, fours: val } : null);
+                                  }}
+                                  className="w-full bg-white/5 text-center border border-white/10 rounded-lg px-2 py-1 mt-1 font-mono text-sm text-white focus:outline-none focus:border-orange-500"
+                                />
+                              ) : (
+                                <span className="text-lg font-mono font-bold text-white mt-1">{activeStats.fours || 0}</span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-3 gap-4 text-center">
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block">Sixes (6s)</span>
+                              {isEditingProfile ? (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={activeStats.sixes || 0}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, Number(e.target.value) || 0);
+                                    setEditCareerStats(prev => prev ? { ...prev, sixes: val } : null);
+                                  }}
+                                  className="w-full bg-white/5 text-center border border-white/10 rounded-lg px-2 py-1 mt-1 font-mono text-sm text-white focus:outline-none focus:border-orange-500"
+                                />
+                              ) : (
+                                <span className="text-lg font-mono font-bold text-white mt-1">{activeStats.sixes || 0}</span>
+                              )}
+                            </div>
+
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block">Fifties (50)</span>
+                              {isEditingProfile ? (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={activeStats.fifties || 0}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, Number(e.target.value) || 0);
+                                    setEditCareerStats(prev => prev ? { ...prev, fifties: val } : null);
+                                  }}
+                                  className="w-full bg-white/5 text-center border border-white/10 rounded-lg px-2 py-1 mt-1 font-mono text-sm text-white focus:outline-none focus:border-orange-500"
+                                />
+                              ) : (
+                                <span className="text-lg font-mono font-bold text-white mt-1">{activeStats.fifties || 0}</span>
+                              )}
+                            </div>
+
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block">Hundreds (100)</span>
+                              {isEditingProfile ? (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={activeStats.hundreds || 0}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, Number(e.target.value) || 0);
+                                    setEditCareerStats(prev => prev ? { ...prev, hundreds: val } : null);
+                                  }}
+                                  className="w-full bg-white/5 text-center border border-white/10 rounded-lg px-2 py-1 mt-1 font-mono text-sm text-yellow-400 focus:outline-none focus:border-orange-500"
+                                />
+                              ) : (
+                                <span className="text-lg font-mono font-bold text-yellow-400 mt-1">{activeStats.hundreds || 0}</span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Bowling Record Block */}
+                        <div className="bg-white/5 border border-white/10 rounded-2xl p-5 shadow-lg space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+                          <div className="flex items-center gap-2 border-b border-white/5 pb-2">
+                            <ShieldCheck size={16} className="text-blue-500" />
+                            <h4 className="text-xs font-mono uppercase tracking-[0.2em] text-gray-300">Bowling Career Stats</h4>
+                          </div>
+
+                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 text-center">
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block">Overs</span>
+                              <span className="text-lg font-mono font-bold text-white mt-1">
+                                {(Math.floor((activeStats.ballsBowled || 0) / 6) + ((activeStats.ballsBowled || 0) % 6) / 10).toFixed(1)}
+                              </span>
+                            </div>
+
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block">Balls Bowled</span>
+                              {isEditingProfile ? (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={activeStats.ballsBowled || 0}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, Number(e.target.value) || 0);
+                                    setEditCareerStats(prev => prev ? { ...prev, ballsBowled: val } : null);
+                                  }}
+                                  className="w-full bg-white/5 text-center border border-white/10 rounded-lg px-2 py-1 mt-1 font-mono text-sm text-white focus:outline-none focus:border-blue-500"
+                                />
+                              ) : (
+                                <span className="text-lg font-mono font-bold text-white mt-1">{activeStats.ballsBowled || 0}</span>
+                              )}
+                            </div>
+
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block">Wickets</span>
+                              {isEditingProfile ? (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={activeStats.wickets || 0}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, Number(e.target.value) || 0);
+                                    setEditCareerStats(prev => prev ? { ...prev, wickets: val } : null);
+                                  }}
+                                  className="w-full bg-white/5 text-center border border-white/10 rounded-lg px-2 py-1 mt-1 font-mono text-sm text-blue-400 focus:outline-none focus:border-blue-500"
+                                />
+                              ) : (
+                                <span className="text-lg font-mono font-bold text-blue-400 mt-1">{activeStats.wickets || 0}</span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 text-center">
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block">Hat-Tricks</span>
+                              {isEditingProfile ? (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={activeStats.hatTricks || 0}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, Number(e.target.value) || 0);
+                                    setEditCareerStats(prev => prev ? { ...prev, hatTricks: val } : null);
+                                  }}
+                                  className="w-full bg-white/5 text-center border border-white/10 rounded-lg px-2 py-1 mt-1 font-mono text-sm text-yellow-500 focus:outline-none focus:border-blue-500"
+                                />
+                              ) : (
+                                <span className="text-lg font-mono font-bold text-yellow-500 mt-1">{activeStats.hatTricks || 0}</span>
+                              )}
+                            </div>
+
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block">Best Bowl</span>
+                              {isEditingProfile ? (
+                                <div className="flex items-center gap-1 mt-1">
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    value={activeStats.bestBowling?.wickets || 0}
+                                    onChange={(e) => {
+                                      const val = Math.max(0, Number(e.target.value) || 0);
+                                      setEditCareerStats(prev => prev ? {
+                                        ...prev,
+                                        bestBowling: {
+                                          wickets: val,
+                                          runs: prev.bestBowling?.runs || 0
+                                        }
+                                      } : null);
+                                    }}
+                                    className="w-10 bg-white/5 text-center border border-white/10 rounded px-1 py-0.5 font-mono text-[11px] text-white focus:outline-noneFocus"
+                                    placeholder="Wkts"
+                                  />
+                                  <span className="text-gray-500">/</span>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    value={activeStats.bestBowling?.runs || 0}
+                                    onChange={(e) => {
+                                      const val = Math.max(0, Number(e.target.value) || 0);
+                                      setEditCareerStats(prev => prev ? {
+                                        ...prev,
+                                        bestBowling: {
+                                          wickets: prev.bestBowling?.wickets || 0,
+                                          runs: val
+                                        }
+                                      } : null);
+                                    }}
+                                    className="w-10 bg-white/5 text-center border border-white/10 rounded px-1 py-0.5 font-mono text-[11px] text-white focus:outline-none"
+                                    placeholder="Runs"
+                                  />
+                                </div>
+                              ) : (
+                                <span className="text-lg font-mono font-bold text-white mt-1">
+                                  {activeStats.bestBowling?.wickets || 0}/{activeStats.bestBowling?.runs || 0}
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block">Runs Conceded</span>
+                              {isEditingProfile ? (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={activeStats.runsConceded || 0}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, Number(e.target.value) || 0);
+                                    setEditCareerStats(prev => prev ? { ...prev, runsConceded: val } : null);
+                                  }}
+                                  className="w-full bg-white/5 text-center border border-white/10 rounded-lg px-2 py-1 mt-1 font-mono text-sm text-white focus:outline-none focus:border-blue-500"
+                                />
+                              ) : (
+                                <span className="text-lg font-mono font-bold text-white mt-1">{activeStats.runsConceded || 0}</span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-4 text-center">
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block">Dots</span>
+                              {isEditingProfile ? (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={activeStats.dots || 0}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, Number(e.target.value) || 0);
+                                    setEditCareerStats(prev => prev ? { ...prev, dots: val } : null);
+                                  }}
+                                  className="w-full bg-white/5 text-center border border-white/10 rounded-lg px-2 py-1 mt-1 font-mono text-sm text-white focus:outline-none focus:border-blue-500"
+                                />
+                              ) : (
+                                <span className="text-lg font-mono font-bold text-white mt-1">{activeStats.dots || 0}</span>
+                              )}
+                            </div>
+
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block">Economy</span>
+                              <span className="text-lg font-mono font-bold text-white mt-1">
+                                {activeStats.ballsBowled > 0 ? ((activeStats.runsConceded / activeStats.ballsBowled) * 6).toFixed(2) : "0.00"}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Fielding Record Block */}
+                        <div className="bg-white/5 border border-white/10 rounded-2xl p-5 shadow-lg space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+                          <div className="flex items-center gap-2 border-b border-white/5 pb-2">
+                            <User size={16} className="text-emerald-500" />
+                            <h4 className="text-xs font-mono uppercase tracking-[0.2em] text-gray-300">Fielding Career Stats</h4>
+                          </div>
+                          
+                          <div className="grid grid-cols-3 gap-4 text-center pb-2">
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block">Catches</span>
+                              {isEditingProfile ? (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={activeStats.catches || 0}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, Number(e.target.value) || 0);
+                                    setEditCareerStats(prev => prev ? { ...prev, catches: val } : null);
+                                  }}
+                                  className="w-full bg-white/5 text-center border border-white/10 rounded-lg px-2 py-1 mt-1 font-mono text-sm text-emerald-400 focus:outline-none focus:border-emerald-500"
+                                />
+                              ) : (
+                                <span className="text-lg font-mono font-bold text-emerald-400 mt-1">{activeStats.catches || 0}</span>
+                              )}
+                            </div>
+
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block">Throw Complete</span>
+                              {isEditingProfile ? (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={activeStats.throwComplete || activeStats.runOuts || 0}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, Number(e.target.value) || 0);
+                                    setEditCareerStats(prev => prev ? { ...prev, runOuts: val, throwComplete: val } : null);
+                                  }}
+                                  className="w-full bg-white/5 text-center border border-white/10 rounded-lg px-2 py-1 mt-1 font-mono text-sm text-emerald-400 focus:outline-none focus:border-emerald-500"
+                                />
+                              ) : (
+                                <span className="text-lg font-mono font-bold text-emerald-400 mt-1">{activeStats.throwComplete || activeStats.runOuts || 0}</span>
+                              )}
+                            </div>
+
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block">Stumpings</span>
+                              {isEditingProfile ? (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={activeStats.stumpings || 0}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, Number(e.target.value) || 0);
+                                    setEditCareerStats(prev => prev ? { ...prev, stumpings: val } : null);
+                                  }}
+                                  className="w-full bg-white/5 text-center border border-white/10 rounded-lg px-2 py-1 mt-1 font-mono text-sm text-emerald-400 focus:outline-none focus:border-emerald-500"
+                                />
+                              ) : (
+                                <span className="text-lg font-mono font-bold text-emerald-400 mt-1">{activeStats.stumpings || 0}</span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-3 gap-4 text-center pb-2">
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block">Catches Dropped</span>
+                              {isEditingProfile ? (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={activeStats.catchDrop || 0}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, Number(e.target.value) || 0);
+                                    setEditCareerStats(prev => prev ? { ...prev, catchDrop: val } : null);
+                                  }}
+                                  className="w-full bg-white/5 text-center border border-white/10 rounded-lg px-2 py-1 mt-1 font-mono text-sm text-red-400 focus:outline-none focus:border-emerald-500"
+                                />
+                              ) : (
+                                <span className="text-lg font-mono font-bold text-red-400 mt-1">{activeStats.catchDrop || 0}</span>
+                              )}
+                            </div>
+
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block">Miss Fields</span>
+                              {isEditingProfile ? (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={activeStats.missField || 0}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, Number(e.target.value) || 0);
+                                    setEditCareerStats(prev => prev ? { ...prev, missField: val } : null);
+                                  }}
+                                  className="w-full bg-white/5 text-center border border-white/10 rounded-lg px-2 py-1 mt-1 font-mono text-sm text-red-400 focus:outline-none focus:border-emerald-500"
+                                />
+                              ) : (
+                                <span className="text-lg font-mono font-bold text-red-400 mt-1">{activeStats.missField || 0}</span>
+                              )}
+                            </div>
+
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block">Missed Throw</span>
+                              {isEditingProfile ? (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={activeStats.missedThrows || 0}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, Number(e.target.value) || 0);
+                                    setEditCareerStats(prev => prev ? { ...prev, missedThrows: val } : null);
+                                  }}
+                                  className="w-full bg-white/5 text-center border border-white/10 rounded-lg px-2 py-1 mt-1 font-mono text-sm text-red-400 focus:outline-none focus:border-emerald-500"
+                                />
+                              ) : (
+                                <span className="text-lg font-mono font-bold text-red-400 mt-1">{activeStats.missedThrows || 0}</span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 gap-4 text-center">
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block text-center leading-3">Field Accuracy</span>
+                              <span className="text-lg font-mono font-bold text-emerald-400 mt-1">{fieldingAccuracy}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {activeTab === 'career' && !isProfileOpen && (
           <div className="space-y-8 animate-in fade-in duration-500 overflow-x-hidden">
             {/* Career Tab Premium Header Section */}
-            <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 bg-white/5 border border-white/10 rounded-2xl p-5 shadow-lg">
+            <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 bg-[#0D153B] border border-[#FF1F7E]/20 rounded-2xl p-5 shadow-lg shadow-black/30">
               <div>
                 <h1 className="text-xl md:text-2xl font-mono uppercase tracking-tighter text-white flex items-center gap-2">
-                  <Trophy className="text-yellow-500" size={24} />
+                  <Trophy className="text-[#FFA000]" size={24} />
                   <span>Player Careers</span>
                 </h1>
-                <p className="text-xs text-gray-400 mt-1 uppercase tracking-wider font-mono">Cumulative All-Time Lifetime Statistics</p>
+                <p className="text-xs text-slate-300 mt-1 uppercase tracking-wider font-mono">Cumulative All-Time Lifetime Statistics</p>
               </div>
               <button
                 id="export-career-data-btn"
                 onClick={handleDownloadCareerHTML}
-                className="flex items-center justify-center gap-2 py-2.5 px-5 bg-gradientlinear-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 border border-orange-400/20 text-black font-semibold rounded-xl text-xs transition-all tracking-wider uppercase shadow-lg shadow-orange-500/10 active:scale-95 duration-200"
+                className="flex items-center justify-center gap-2 py-2.5 px-5 bg-gradient-to-r from-[#FF1F7E] to-[#DF0A61] hover:from-[#FF0F74] hover:to-[#C2004F] border border-[#FF5B9F]/25 text-white font-bold rounded-xl text-xs transition-all tracking-wider uppercase shadow-lg shadow-pink-500/15 active:scale-95 duration-200 cursor-pointer"
               >
                 <Download size={14} />
                 <span>Export Career Report</span>
               </button>
             </div>
-
+ 
             {/* Board 1: Batting Career */}
             <section className="space-y-4">
               <div className="flex items-center gap-2 mb-2">
-                <Sword size={18} className="text-orange-500" />
-                <h2 className="text-sm font-mono uppercase tracking-[0.2em] text-gray-400">Batting Board</h2>
+                <Sword size={18} className="text-[#FF1F7E]" />
+                <h2 className="text-sm font-mono uppercase tracking-[0.2em] text-slate-300">Batting Board</h2>
               </div>
               <div className="overflow-x-auto rounded-xl border border-white/10 bg-white/5">
                 <table className="w-full text-left font-mono text-[10px] border-collapse">
@@ -1997,9 +3667,9 @@ export default function App() {
                       const sr = s.ballsFaced > 0 ? (s.runs / s.ballsFaced) * 100 : 0;
                       return (
                         <tr key={p.id} className="border-b border-white/5 hover:bg-white/5 group">
-                          <td className="p-3 font-medium text-white max-w-120px">
+                          <td className="p-3 font-medium text-white max-w-[120px]">
                             <div className="flex items-center gap-3">
-                              <div className="w-8 h-8 rounded-full bg-white/10 overflow-hidden shrink-0 border border-white/5">
+                              <div className="w-8 h-8 rounded-full bg-white/10 overflow-hidden flex-shrink-0 border border-white/5">
                                 {p.avatar ? (
                                   <img src={p.avatar} alt={p.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                                 ) : (
@@ -2010,18 +3680,25 @@ export default function App() {
                               </div>
                               <div className="flex flex-col min-w-0">
                                 <span className="truncate">{p.name}</span>
-                              <button 
-                                onClick={() => openEditModal('full', p.id)}
-                                className="p-1 text-orange-500 hover:bg-orange-500/10 rounded transition-all w-fit"
-                                title="Manage Player"
-                              >
-                                <Pencil size={10} />
-                              </button>
+                                <button 
+                                  onClick={() => {
+                                    setSelectedPlayerId(p.id);
+                                    setIsProfileOpen(true);
+                                    setIsEditingProfile(false);
+                                    setEditProfileName(p.name);
+                                    setEditProfileJersey(p.jerseyNo ? String(p.jerseyNo) : "");
+                                    setEditProfileDob(p.dob || "");
+                                  }}
+                                  className="p-1 text-[#FF1F7E] hover:bg-[#FF1F7E]/10 rounded transition-all w-fit"
+                                  title="View Player"
+                                >
+                                  <Eye size={10} />
+                                </button>
                               </div>
                             </div>
                           </td>
                           <td className="p-3">{s.inningsBat}</td>
-                          <td className="p-3 text-orange-500">{s.runs}</td>
+                          <td className="p-3 text-[#FF1F7E] font-bold">{s.runs}</td>
                           <td className="p-3 font-bold">{s.highestScore}</td>
                           <td className="p-3">{s.fifties}</td>
                           <td className="p-3">{s.hundreds}</td>
@@ -2062,9 +3739,9 @@ export default function App() {
                       const eco = s.ballsBowled > 0 ? (s.runsConceded / s.ballsBowled) * 6 : 0;
                       return (
                         <tr key={p.id} className="border-b border-white/5 hover:bg-white/5 group">
-                          <td className="p-3 font-medium text-white max-w-120px">
+                          <td className="p-3 font-medium text-white max-w-[120px]">
                             <div className="flex items-center gap-3">
-                              <div className="w-8 h-8 rounded-full bg-white/10 overflow-hidden shrink-0 border border-white/5">
+                              <div className="w-8 h-8 rounded-full bg-white/10 overflow-hidden flex-shrink-0 border border-white/5">
                                 {p.avatar ? (
                                   <img src={p.avatar} alt={p.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                                 ) : (
@@ -2076,11 +3753,18 @@ export default function App() {
                               <div className="flex flex-col min-w-0">
                                 <span className="truncate">{p.name}</span>
                                 <button 
-                                  onClick={() => openEditModal('full', p.id)}
+                                  onClick={() => {
+                                    setSelectedPlayerId(p.id);
+                                    setIsProfileOpen(true);
+                                    setIsEditingProfile(false);
+                                    setEditProfileName(p.name);
+                                    setEditProfileJersey(p.jerseyNo ? String(p.jerseyNo) : "");
+                                    setEditProfileDob(p.dob || "");
+                                  }}
                                   className="p-1 text-blue-400 hover:bg-blue-400/10 rounded transition-all w-fit"
-                                  title="Manage Player"
+                                  title="View Player"
                                 >
-                                  <Pencil size={10} />
+                                  <Eye size={10} />
                                 </button>
                               </div>
                             </div>
@@ -2105,32 +3789,32 @@ export default function App() {
           <div className="space-y-8 animate-in fade-in duration-500">
             <div className="space-y-6">
               <h2 className="text-xl font-mono uppercase tracking-widest flex items-center gap-2">
-                <Sword size={20} className="text-orange-500" /> Head-to-Head
+                <Sword size={20} className="text-[#FF1F7E]" /> Head-to-Head
               </h2>
               
               {players.map(p => (
-                <div key={p.id} className="p-6 bg-white/5 border border-white/10 rounded-2xl flex items-start gap-4">
-                  <div className="w-16 h-16 rounded-full overflow-hidden bg-white/10 border border-white/5 shrink-0">
+                <div key={p.id} className="p-6 bg-[#0D153B] border border-[#FF1F7E]/15 rounded-2xl flex items-start gap-4 shadow-lg">
+                  <div className="w-16 h-16 rounded-full overflow-hidden bg-white/10 border border-white/10 flex-shrink-0">
                     {p.avatar ? (
                       <img src={p.avatar} alt={p.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                     ) : (
-                      <div className="w-full h-full flex items-center justify-center text-gray-500 bg-white/5">
+                      <div className="w-full h-full flex items-center justify-center text-gray-400 bg-white/5">
                         <User size={32} />
                       </div>
                     )}
                   </div>
                   <div className="flex-1">
-                    <h3 className="text-2xl font-mono mb-4 border-b border-white/5 pb-2">{p.name}</h3>
+                    <h3 className="text-2xl font-mono mb-4 border-b border-[#FF1F7E]/15 pb-2 text-white">{p.name}</h3>
                     <div className="grid grid-cols-2 gap-8">
                       <div>
-                        <span className="text-[10px] uppercase font-mono text-red-500 tracking-widest mb-1 block">Nemesis</span>
-                        <p className="text-lg font-mono">{getNemesis(p.id)}</p>
-                        <p className="text-[10px] text-gray-500 mt-1 uppercase">Most Wickets Lost To</p>
+                        <span className="text-[10px] uppercase font-mono text-red-400 tracking-widest mb-1 block">Nemesis</span>
+                        <p className="text-lg font-mono text-white">{getNemesis(p.id)}</p>
+                        <p className="text-[10px] text-slate-400 mt-1 uppercase">Most Wickets Lost To</p>
                       </div>
                       <div>
-                        <span className="text-[10px] uppercase font-mono text-green-500 tracking-widest mb-1 block">Bunny</span>
-                        <p className="text-lg font-mono">{getBunny(p.id)}</p>
-                        <p className="text-[10px] text-gray-500 mt-1 uppercase">Top Wicket Victim</p>
+                        <span className="text-[10px] uppercase font-mono text-emerald-400 tracking-widest mb-1 block">Bunny</span>
+                        <p className="text-lg font-mono text-white">{getBunny(p.id)}</p>
+                        <p className="text-[10px] text-slate-400 mt-1 uppercase">Top Wicket Victim</p>
                       </div>
                     </div>
                   </div>
@@ -2139,12 +3823,12 @@ export default function App() {
             </div>
           </div>
         )}
-
+ 
         {activeTab === 'settings' && (
           <div className="space-y-8 animate-in fade-in duration-500">
             <section className="space-y-4">
               <h2 className="text-xl font-mono uppercase tracking-widest flex items-center gap-2">
-                <User size={20} className="text-orange-500" /> Player Management
+                <User size={20} className="text-[#FF1F7E]" /> Player Management
               </h2>
               
               <div className="flex gap-2">
@@ -2152,7 +3836,7 @@ export default function App() {
                   type="text"
                   placeholder="New Player Name"
                   id="newPlayerName"
-                  className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3 font-mono focus:outline-none focus:border-orange-500/50"
+                  className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3 font-mono focus:outline-none focus:border-[#FF1F7E]/50 text-white"
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
                       const input = e.currentTarget;
@@ -2171,15 +3855,15 @@ export default function App() {
                       input.value = '';
                     }
                   }}
-                  className="px-6 py-3 bg-orange-500 text-black font-mono font-bold rounded-xl active:scale-95 transition-all"
+                  className="px-6 py-3 bg-[#FF1F7E] hover:opacity-90 text-white font-mono font-bold rounded-xl active:scale-95 transition-all shadow-lg shadow-pink-500/15 cursor-pointer"
                 >
                   ADD
                 </button>
               </div>
-
+ 
               <div className="space-y-3">
                 {players.map(p => (
-                  <div key={p.id} className="p-4 bg-white/5 border border-white/10 rounded-xl flex items-center gap-4">
+                  <div key={p.id} className="p-4 bg-[#0D153B] border border-[#FF1F7E]/10 rounded-xl flex items-center gap-4">
                     <div className="relative group cursor-pointer" onClick={() => document.getElementById(`avatar-input-${p.id}`)?.click()}>
                       <div className="w-12 h-12 rounded-full bg-white/10 border border-white/5 flex items-center justify-center overflow-hidden">
                         {p.avatar ? (
@@ -2191,8 +3875,7 @@ export default function App() {
                       <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center rounded-full transition-opacity">
                         <Camera size={14} className="text-white" />
                       </div>
-                      <input
-                        aria-label='Upload Player Avatar'
+                      <input 
                         type="file"
                         id={`avatar-input-${p.id}`}
                         className="hidden"
@@ -2233,7 +3916,7 @@ export default function App() {
                 <h2 className="text-xl font-mono uppercase tracking-widest flex items-center gap-2">
                   <History size={20} className="text-blue-400" /> Career Edit Logs
                 </h2>
-                <div className="space-y-2 max-h-400px overflow-y-auto pr-2 scrollbar-thin">
+                <div className="space-y-2 max-h-[400px] overflow-y-auto pr-2 scrollbar-thin">
                   {manualEditLogs.slice().reverse().map(log => (
                     <div key={log.id} className="p-4 bg-white/5 border border-white/10 rounded-xl font-mono text-[10px]">
                       <div className="flex justify-between text-gray-500 mb-1">
@@ -2266,13 +3949,114 @@ export default function App() {
 
       {/* Modals */}
       <AnimatePresence>
-        {dismissalModal.isOpen && (
-          <div className="fixed inset-0 bg-black/90 backdrop-blur-md z-110 flex items-center justify-center p-4">
+        {extraModal.isOpen && (
+          <div className="fixed inset-0 bg-black/95 backdrop-blur-md z-[110] flex items-center justify-center p-4">
             <motion.div 
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-[#1a1b1e] border border-red-500/20 p-8 rounded-3xl w-full max-w-md shadow-2xl"
+              className="bg-[#0D153B] border border-[#FF1F7E]/25 p-8 rounded-3xl w-full max-w-sm shadow-2xl shadow-black/80"
+            >
+              <div className="flex items-center gap-3 mb-4 text-[#FF1F7E]">
+                <Zap size={28} />
+                <h2 className="text-xl font-mono uppercase tracking-tighter">Any Additional Runs?</h2>
+              </div>
+              <p className="text-gray-400 font-mono text-xs mb-6 uppercase tracking-widest leading-relaxed">
+                Select additional runs scored off this {
+                  extraModal.type === 'wide' ? 'Wide (WD)' : 
+                  extraModal.type === 'noball' ? 'No-Ball (NB)' : 
+                  extraModal.type === 'lb' ? 'Leg Bye (LB)' : 
+                  'Bye (B)'
+                } delivery:
+              </p>
+              
+              <div className="flex flex-col gap-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    onClick={() => {
+                      if (extraModal.type) {
+                        submitExtraRuns(extraModal.type, 0);
+                      }
+                    }}
+                    className="py-4 bg-white/5 hover:bg-[#FF1F7E]/20 active:scale-95 border border-white/5 hover:border-[#FF1F7E]/30 rounded-2xl font-mono text-sm font-bold text-white transition-all flex flex-col items-center justify-center leading-none"
+                  >
+                    <span className="text-xl mb-1">0</span>
+                    <span className="text-[10px] uppercase text-zinc-400">Just Extra</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (extraModal.type) {
+                        submitExtraRuns(extraModal.type, 1);
+                      }
+                    }}
+                    className="py-4 bg-white/5 hover:bg-[#FF1F7E]/20 active:scale-95 border border-white/5 hover:border-[#FF1F7E]/30 rounded-2xl font-mono text-sm font-bold text-white transition-all flex flex-col items-center justify-center leading-none"
+                  >
+                    <span className="text-xl mb-1">+1</span>
+                    <span className="text-[10px] uppercase text-zinc-400">1 Run</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (extraModal.type) {
+                        submitExtraRuns(extraModal.type, 2);
+                      }
+                    }}
+                    className="py-4 bg-white/5 hover:bg-[#FF1F7E]/20 active:scale-95 border border-white/5 hover:border-[#FF1F7E]/30 rounded-2xl font-mono text-sm font-bold text-white transition-all flex flex-col items-center justify-center leading-none"
+                  >
+                    <span className="text-xl mb-1">+2</span>
+                    <span className="text-[10px] uppercase text-zinc-400">2 Runs</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (extraModal.type) {
+                        submitExtraRuns(extraModal.type, 3);
+                      }
+                    }}
+                    className="py-4 bg-white/5 hover:bg-[#FF1F7E]/20 active:scale-95 border border-white/5 hover:border-[#FF1F7E]/30 rounded-2xl font-mono text-sm font-bold text-white transition-all flex flex-col items-center justify-center leading-none"
+                  >
+                    <span className="text-xl mb-1">+3</span>
+                    <span className="text-[10px] uppercase text-zinc-400">3 Runs</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (extraModal.type) {
+                        submitExtraRuns(extraModal.type, 4);
+                      }
+                    }}
+                    className="py-4 bg-white/5 hover:bg-[#FF1F7E]/20 active:scale-95 border border-white/5 hover:border-[#FF1F7E]/30 rounded-2xl font-mono text-sm font-bold text-white transition-all flex flex-col items-center justify-center leading-none"
+                  >
+                    <span className="text-xl mb-1">+4</span>
+                    <span className="text-[10px] uppercase text-zinc-400">Boundary</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (extraModal.type) {
+                        submitExtraRuns(extraModal.type, 6);
+                      }
+                    }}
+                    className="py-4 bg-white/5 hover:bg-[#FF1F7E]/20 active:scale-95 border border-white/5 hover:border-[#FF1F7E]/30 rounded-2xl font-mono text-sm font-bold text-white transition-all flex flex-col items-center justify-center leading-none"
+                  >
+                    <span className="text-xl mb-1">+6</span>
+                    <span className="text-[10px] uppercase text-zinc-400">6 Runs</span>
+                  </button>
+                </div>
+              </div>
+              <button
+                onClick={() => setExtraModal({ isOpen: false, type: null })}
+                className="w-full mt-6 py-3 border border-white/10 hover:bg-white/5 rounded-xl font-mono text-xs text-gray-400 uppercase tracking-widest transition-all"
+              >
+                Cancel
+              </button>
+            </motion.div>
+          </div>
+        )}
+
+        {dismissalModal.isOpen && (
+          <div className="fixed inset-0 bg-black/95 backdrop-blur-md z-[110] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-[#0D153B] border border-[#FF1F7E]/25 p-8 rounded-3xl w-full max-w-md shadow-2xl shadow-black/80"
             >
               <div className="flex items-center gap-3 mb-4 text-red-500">
                 <Skull size={28} />
@@ -2287,7 +4071,13 @@ export default function App() {
                     key={type}
                     onClick={() => {
                       if (dismissalModal.outPlayerId !== null) {
-                        confirmWicket(dismissalModal.outPlayerId, type);
+                        if (type === 'Catch Out') {
+                          const outId = dismissalModal.outPlayerId;
+                          setDismissalModal({ isOpen: false, outPlayerId: null });
+                          setIsFielderModalOpen({ isOpen: true, outPlayerId: outId, type: 'Catch' });
+                        } else {
+                          confirmWicket(dismissalModal.outPlayerId, type);
+                        }
                       }
                     }}
                     className="p-5 bg-white/5 hover:bg-white/10 active:scale-95 border border-white/5 rounded-2xl font-mono text-sm text-center font-bold text-white transition-all flex flex-col items-center justify-center gap-2 hover:border-red-500/30"
@@ -2301,6 +4091,20 @@ export default function App() {
                     <span>{type}</span>
                   </button>
                 ))}
+ 
+                <button
+                  onClick={() => {
+                    if (dismissalModal.outPlayerId !== null) {
+                      const outId = dismissalModal.outPlayerId;
+                      setDismissalModal({ isOpen: false, outPlayerId: null });
+                      setIsFielderModalOpen({ isOpen: true, outPlayerId: outId, type: 'Stumping' });
+                    }
+                  }}
+                  className="col-span-2 p-5 bg-white/5 hover:bg-white/10 active:scale-95 border border-white/5 rounded-2xl font-mono text-sm text-center font-bold text-white transition-all flex flex-col items-center justify-center gap-2 hover:border-red-500/30 font-semibold"
+                >
+                  <span className="text-red-400 text-lg">🧤</span>
+                  <span>Stumps</span>
+                </button>
               </div>
               <button
                 onClick={() => setDismissalModal({ isOpen: false, outPlayerId: null })}
@@ -2312,15 +4116,86 @@ export default function App() {
           </div>
         )}
 
-        {runOutModal.isOpen && (
-          <div className="fixed inset-0 bg-black/95 backdrop-blur-md z-115 flex items-center justify-center p-4">
+        {isFielderModalOpen.isOpen && (
+          <div className="fixed inset-0 bg-black/95 backdrop-blur-md z-[110] flex items-center justify-center p-4">
             <motion.div 
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-[#1a1b1e] border border-orange-500/20 p-8 rounded-3xl w-full max-w-sm shadow-2xl"
+              className="bg-[#0D153B] border border-[#FF1F7E]/25 p-8 rounded-3xl w-full max-w-md shadow-2xl shadow-black/80"
             >
-              <div className="flex items-center gap-3 mb-4 text-orange-500">
+              <div className="flex items-center gap-3 mb-4 text-red-500">
+                <User size={28} />
+                <h2 className="text-2xl font-mono uppercase tracking-tighter">
+                  {isFielderModalOpen.type === 'Catch' ? 'Select Fielder' : 'Select Wicketkeeper'}
+                </h2>
+              </div>
+              <p className="text-gray-400 font-mono text-xs mb-6 uppercase tracking-widest leading-relaxed">
+                {isFielderModalOpen.type === 'Catch' 
+                  ? `Who took the catch to dismiss ${players.find(p => p.id === isFielderModalOpen.outPlayerId)?.name}?`
+                  : `Who made the stumping to dismiss ${players.find(p => p.id === isFielderModalOpen.outPlayerId)?.name}?`
+                }
+              </p>
+              <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 scrollbar-thin">
+                {players
+                  .filter(p => p.id !== match.strikerId && p.id !== match.nonStrikerId && p.id !== isFielderModalOpen.outPlayerId)
+                  .map(p => (
+                    <button
+                      key={p.id}
+                      onClick={() => {
+                        if (isFielderModalOpen.outPlayerId !== null) {
+                          if (isFielderModalOpen.type === 'Catch') {
+                            confirmCatch(isFielderModalOpen.outPlayerId, p.id);
+                          } else {
+                            confirmStumping(isFielderModalOpen.outPlayerId, p.id);
+                          }
+                        }
+                      }}
+                      className="w-full p-4 bg-white/5 hover:bg-white/10 border border-white/5 rounded-2xl font-mono text-left transition-all flex items-center justify-between group"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full bg-white/5 overflow-hidden flex-shrink-0 border border-white/5">
+                          {p.avatar ? (
+                            <img src={p.avatar} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-gray-600">
+                              <User size={20} />
+                            </div>
+                          )}
+                        </div>
+                        <div>
+                          <p className="text-white text-sm font-bold">{p.name}</p>
+                          <p className="text-[10px] text-gray-500 uppercase">
+                            {isFielderModalOpen.type === 'Catch' 
+                              ? `Catches: ${getPlayerStats(p.id).catches || 0}`
+                              : `Stumpings: ${getPlayerStats(p.id).stumpings || 0}`
+                            }
+                          </p>
+                        </div>
+                      </div>
+                      <ChevronRight size={18} className="text-gray-700 group-hover:text-white transition-all transform group-hover:translate-x-1" />
+                    </button>
+                  ))}
+              </div>
+              <button
+                onClick={() => setIsFielderModalOpen({ isOpen: false, outPlayerId: null })}
+                className="w-full mt-6 py-3 border border-white/10 hover:bg-white/5 rounded-xl font-mono text-xs text-gray-400 uppercase tracking-widest transition-all"
+              >
+                Cancel
+              </button>
+            </motion.div>
+          </div>
+        )}
+
+        {runOutModal.isOpen && (
+          <div className="fixed inset-0 bg-black/95 backdrop-blur-md z-[115] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-[#0D153B] border border-[#FF1F7E]/25 p-8 rounded-3xl w-full max-w-sm shadow-2xl shadow-black/80"
+            >
+              <div className="flex items-center gap-3 mb-4 text-[#FF1F7E]">
                 <Zap size={28} />
                 <h2 className="text-xl font-mono uppercase tracking-tighter">Runs Completed</h2>
               </div>
@@ -2337,7 +4212,7 @@ export default function App() {
                           confirmRunOut(runOutModal.outPlayerId, runs);
                         }
                       }}
-                      className="h-14 bg-white/5 hover:bg-orange-500/20 active:scale-95 border border-white/5 hover:border-orange-500/30 rounded-xl font-mono text-lg font-bold text-white transition-all flex items-center justify-center"
+                      className="h-14 bg-white/5 hover:bg-[#FF1F7E]/20 active:scale-95 border border-white/5 hover:border-[#FF1F7E]/30 rounded-xl font-mono text-lg font-bold text-white transition-all flex items-center justify-center"
                     >
                       {runs}
                     </button>
@@ -2355,12 +4230,12 @@ export default function App() {
         )}
 
         {isWicketModalOpen.isOpen && (
-          <div className="fixed inset-0 bg-black/90 backdrop-blur-md z-110 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/95 backdrop-blur-md z-[110] flex items-center justify-center p-4">
             <motion.div 
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-[#1a1b1e] border border-red-500/20 p-8 rounded-3xl w-full max-w-md shadow-2xl"
+              className="bg-[#0D153B] border border-[#FF1F7E]/25 p-8 rounded-3xl w-full max-w-md shadow-2xl shadow-black/80"
             >
               <div className="flex items-center gap-3 mb-4 text-red-500">
                 <Skull size={28} />
@@ -2370,7 +4245,7 @@ export default function App() {
                 {players.find(p => p.id === isWicketModalOpen.outPlayerId)?.name} is Wicket!. 
                 Record has been committed to career stats. Select replacement:
               </p>
-              <div className="space-y-3 max-h-400px overflow-y-auto pr-2 scrollbar-thin">
+              <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 scrollbar-thin">
                 {players
                   .filter(p => p.id !== match.strikerId && p.id !== match.nonStrikerId && p.id !== isWicketModalOpen.outPlayerId)
                   .map(p => (
@@ -2380,7 +4255,7 @@ export default function App() {
                       className="w-full p-4 bg-white/5 hover:bg-white/10 border border-white/5 rounded-2xl font-mono text-left transition-all flex items-center justify-between group"
                     >
                       <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-full bg-white/5 overflow-hidden shrink-0 border border-white/5">
+                        <div className="w-10 h-10 rounded-full bg-white/5 overflow-hidden flex-shrink-0 border border-white/5">
                           {p.avatar ? (
                             <img src={p.avatar} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                           ) : (
@@ -2403,14 +4278,14 @@ export default function App() {
         )}
 
         {isBowlerModalOpen && (
-          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-100 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/85 backdrop-blur-md z-[100] flex items-center justify-center p-4">
             <motion.div 
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-[#1a1b1e] border border-white/10 p-8 rounded-3xl w-full max-w-md"
+              className="bg-[#0D153B] border border-[#FF1F7E]/25 p-8 rounded-3xl w-full max-w-md shadow-2xl shadow-black/80"
             >
-              <h2 className="text-2xl font-mono mb-2 uppercase tracking-tighter text-orange-500">Select New Bowler</h2>
+              <h2 className="text-2xl font-mono mb-2 uppercase tracking-tighter text-[#FF1F7E]">Select New Bowler</h2>
               <p className="text-gray-500 mb-6 text-sm">Over end or transition</p>
               <div className="grid grid-cols-1 gap-3">
                 {players
@@ -2431,12 +4306,12 @@ export default function App() {
         )}
 
         {editModal?.isOpen && (
-          <div className="fixed inset-0 bg-black/90 backdrop-blur-md z-110 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/95 backdrop-blur-md z-[110] flex items-center justify-center p-4">
             <motion.div 
               initial={{ y: 50, opacity: 0 }}
               animate={{ y: 0, opacity: 1 }}
               exit={{ y: 50, opacity: 0 }}
-              className="bg-[#1a1b1e] border border-white/10 p-8 rounded-3xl w-full max-w-md shadow-2xl overflow-y-auto max-h-[90vh]"
+              className="bg-[#0D153B] border border-[#FF1F7E]/25 p-8 rounded-3xl w-full max-w-md shadow-2xl shadow-black/80 overflow-y-auto max-h-[90vh]"
             >
               <div className="flex justify-between items-start mb-6">
                 <div>
@@ -2460,7 +4335,7 @@ export default function App() {
                 <button 
                   onClick={() => setEditModal(prev => prev ? { ...prev, mode: 'overwrite' } : prev)}
                   className={`flex-1 py-2 rounded-lg font-mono text-[10px] uppercase tracking-widest transition-all ${
-                    editModal.mode === 'overwrite' ? 'bg-orange-500 text-black shadow-lg' : 'text-gray-500 hover:text-white'
+                    editModal.mode === 'overwrite' ? 'bg-[#FF1F7E] text-white shadow-lg' : 'text-gray-500 hover:text-white'
                   }`}
                 >
                   Overwrite (Set)
@@ -2485,11 +4360,10 @@ export default function App() {
                       </span>
                     </label>
                     <input 
-                      aria-label={'Edit ${key}'} 
                       type={key === 'name' ? 'text' : 'number'}
                       value={value}
                       onChange={(e) => setEditForm(prev => ({ ...prev, [key]: key === 'name' ? e.target.value : Number(e.target.value) }))}
-                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 font-mono text-lg focus:outline-none focus:border-orange-500/50 transition-colors"
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 font-mono text-lg focus:outline-none focus:border-[#FF1F7E]/50 transition-colors text-white"
                       min={key === 'name' ? undefined : "0"}
                     />
                   </div>
@@ -2549,8 +4423,8 @@ export default function App() {
                 </button>
                   <button 
                     onClick={handleManualEdit}
-                    className={`flex-1 py-4 rounded-2xl font-mono text-xs uppercase tracking-widest font-bold shadow-lg shadow-black/20 ${
-                      editModal.mode === 'overwrite' ? 'bg-orange-500 text-black hover:bg-orange-400' : 'bg-green-500 text-black hover:bg-green-400'
+                    className={`flex-1 py-4 rounded-2xl font-mono text-xs uppercase tracking-widest font-bold shadow-lg shadow-black/20 cursor-pointer ${
+                      editModal.mode === 'overwrite' ? 'bg-[#FF1F7E] text-white hover:opacity-90' : 'bg-green-500 text-black hover:bg-green-400'
                     }`}
                   >
                     Save {editModal.mode === 'overwrite' ? 'Changes' : 'Addition'}
