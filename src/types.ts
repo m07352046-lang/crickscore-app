@@ -9,6 +9,10 @@ export interface Player {
   avatar?: string;
   jerseyNo?: number;
   dob?: string;
+  battingStyle?: string;
+  bowlingStyle?: string;
+  playerRole?: string;
+  currentTeam?: string;
 }
 
 export interface CareerStats {
@@ -37,6 +41,10 @@ export interface CareerStats {
   catchDrop?: number;
   missField?: number;
   missedThrows?: number;
+  overThrow?: number;
+  goldenDucks?: number;
+  ducks?: number;
+  maidenOvers?: number;
 }
 
 export interface ScoringLog {
@@ -145,5 +153,9 @@ export const INITIAL_STATS: Record<number, CareerStats> = INITIAL_PLAYERS.reduce
     catchDrop: 0,
     missField: 0,
     missedThrows: 0,
+    overThrow: 0,
+    goldenDucks: 0,
+    ducks: 0,
+    maidenOvers: 0,
   }
 }), {});

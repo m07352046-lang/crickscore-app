@@ -26,7 +26,14 @@ import {
   Star,
   Save,
   X,
-  Sprout
+  Sprout,
+  Plus,
+  Users,
+  Settings,
+  Flame,
+  Wrench,
+  Search,
+  Trash2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -43,7 +50,7 @@ import {
 
 // Firebase core modules and handles
 import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
-import { doc, getDoc, setDoc, updateDoc, increment } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, increment, deleteDoc } from 'firebase/firestore';
 import { auth, db, googleProvider, signInWithPopup, signOut, handleFirestoreError, OperationType } from './firebase';
 
 const STORAGE_KEYS = {
@@ -90,6 +97,7 @@ export default function App() {
           if (s.catchDrop === undefined) s.catchDrop = 0;
           if (s.missField === undefined) s.missField = 0;
           if (s.missedThrows === undefined) s.missedThrows = 0;
+          if (s.overThrow === undefined) s.overThrow = 0;
         }
       });
       return stats;
@@ -122,6 +130,7 @@ export default function App() {
     mode: 'overwrite' | 'add'
   } | null>(null);
   const [editForm, setEditForm] = useState<Record<string, any>>({});
+  const [deleteConfirmPlayerId, setDeleteConfirmPlayerId] = useState<number | null>(null);
   
   const [match, setMatch] = useState<MatchState>(() => {
     return INITIAL_MATCH_STATE || {
@@ -151,11 +160,15 @@ export default function App() {
     outPlayerId: null,
   });
 
-  const [isFielderModalOpen, setIsFielderModalOpen] = useState<{ isOpen: boolean; outPlayerId: number | null; type?: 'Stumping' | 'Catch' }>({
+  const [isFielderModalOpen, setIsFielderModalOpen] = useState<{ isOpen: boolean; outPlayerId: number | null; type?: 'Stumping' | 'Catch' | 'RunOut' | 'Misfield'; runsCompleted?: number }>({
     isOpen: false,
     outPlayerId: null,
     type: undefined,
+    runsCompleted: undefined,
   });
+
+  const [selectedMisfieldType, setSelectedMisfieldType] = useState<'Catch Drop' | 'Over Throw' | 'Misfield' | 'Missed Throw' | null>(null);
+  const [isMisfieldTypeModalOpen, setIsMisfieldTypeModalOpen] = useState(false);
 
   const [isBowlerModalOpen, setIsBowlerModalOpen] = useState(false);
   const [extraModal, setExtraModal] = useState<{ isOpen: boolean; type: 'wide' | 'noball' | 'lb' | 'by' | null }>({
@@ -171,7 +184,12 @@ export default function App() {
   const [editProfileJersey, setEditProfileJersey] = useState<string>("");
   const [editProfileDob, setEditProfileDob] = useState<string>("");
   const [editCareerStats, setEditCareerStats] = useState<CareerStats | null>(null);
+  const [battingStyle, setBattingStyle] = useState<string>("");
+  const [bowlingStyle, setBowlingStyle] = useState<string>("");
+  const [playerRole, setPlayerRole] = useState<string>("");
+  const [currentTeam, setCurrentTeam] = useState<string>("");
   const [notification, setNotification] = useState<string | null>(null);
+  const [activeSection, setActiveSection] = useState<'menu' | 'player_management' | 'user_profile' | 'app_settings' | 'match_settings' | 'advanced_settings'>('menu');
 
   // Authentication & Cloud Synchronization State
   const [user, setUser] = useState<FirebaseUser | null>(null);
@@ -452,7 +470,8 @@ export default function App() {
         innings: Math.max(0, s.innings || 0),
         catchDrop: Math.max(0, s.catchDrop || 0),
         missField: Math.max(0, s.missField || 0),
-        missedThrows: Math.max(0, s.missedThrows || 0)
+        missedThrows: Math.max(0, s.missedThrows || 0),
+        overThrow: Math.max(0, s.overThrow || 0)
       };
     }
     return sanitized;
@@ -844,6 +863,57 @@ export default function App() {
     return results;
   };
 
+  const checkMaidenOver = async (bowlerId: number, completedOver: (number | string)[]) => {
+    let conceded = 0;
+    for (const ball of completedOver) {
+      if (typeof ball === 'number') {
+        conceded += ball;
+      } else if (typeof ball === 'string') {
+        if (ball.startsWith('WD')) {
+          const parts = ball.split('+');
+          const extraRuns = parts.length > 1 ? Number(parts[1]) : 0;
+          conceded += 1 + extraRuns;
+        } else if (ball.startsWith('NB')) {
+          const parts = ball.split('+');
+          const extraRuns = parts.length > 1 ? Number(parts[1]) : 0;
+          conceded += 1 + extraRuns;
+        }
+      }
+    }
+
+    if (conceded === 0) {
+      // 1. Update local careerStats
+      setCareerStats(prev => {
+        const stats = prev[bowlerId] || {
+          runs: 0, ballsFaced: 0, fours: 0, sixes: 0, fifties: 0, hundreds: 0,
+          inningsBat: 0, highestScore: 0,
+          wickets: 0, ballsBowled: 0, runsConceded: 0, hatTricks: 0,
+          bestBowling: { wickets: 0, runs: 0 },
+          wicketStreak: 0, maidenOvers: 0
+        };
+        return {
+          ...prev,
+          [bowlerId]: {
+            ...stats,
+            maidenOvers: (stats.maidenOvers || 0) + 1
+          }
+        };
+      });
+
+      // 2. Update Firestore document
+      if (user) {
+        try {
+          const playerRef = doc(db, 'users', user.uid, 'players', String(bowlerId));
+          await updateDoc(playerRef, {
+            'careerStats.maidenOvers': increment(1)
+          });
+        } catch (error) {
+          console.error("Firestore player doc update failed for maiden over:", error);
+        }
+      }
+    }
+  };
+
   // Logic: Scoring
   const handleScore = (runs: number) => {
     const isOverEnd = match.overBalls === 5;
@@ -926,6 +996,7 @@ export default function App() {
     });
 
     if (isOverEnd) {
+      checkMaidenOver(match.bowlerId, [...match.currentOver, runs]);
       setIsBowlerModalOpen(true);
     }
   };
@@ -1056,6 +1127,7 @@ export default function App() {
     setNotification(`${extraTypeName} recorded: +${deliveryTotalConceded} run${deliveryTotalConceded > 1 ? 's' : ''}${additionSuffix}`);
 
     if (isOverEnd) {
+      checkMaidenOver(match.bowlerId, [...match.currentOver, label]);
       setIsBowlerModalOpen(true);
     }
   };
@@ -1065,7 +1137,7 @@ export default function App() {
     setDismissalModal({ isOpen: true, outPlayerId });
   };
 
-  const confirmWicket = (outPlayerId: number, dismissalType: 'Bowled' | 'Catch Out' | 'LBW' | 'Run Out') => {
+  const confirmWicket = async (outPlayerId: number, dismissalType: 'Bowled' | 'Catch Out' | 'LBW' | 'Run Out') => {
     if (dismissalType === 'Run Out') {
       setDismissalModal({ isOpen: false, outPlayerId: null });
       setRunOutModal({ isOpen: true, outPlayerId });
@@ -1123,17 +1195,43 @@ export default function App() {
       const isHundred = finalSession.runs >= 100;
       const wasCounted = !!currentSession.inningsCounted;
 
+      const isGoldenDuck = finalSession.runs === 0 && finalSession.balls === 1;
+      const isRegularDuck = finalSession.runs === 0 && finalSession.balls > 1;
+
       nextCareerStats[outPlayerId] = {
         ...originalOutStats,
         ballsFaced: originalOutStats.ballsFaced + 1, // Facing the wicket delivery
         inningsBat: originalOutStats.inningsBat + (wasCounted ? 0 : 1),
         fifties: originalOutStats.fifties + (isFifty ? 1 : 0),
         hundreds: originalOutStats.hundreds + (isHundred ? 1 : 0),
-        highestScore: Math.max(originalOutStats.highestScore, finalSession.runs)
+        highestScore: Math.max(originalOutStats.highestScore, finalSession.runs),
+        goldenDucks: (originalOutStats.goldenDucks || 0) + (isGoldenDuck ? 1 : 0),
+        ducks: (originalOutStats.ducks || 0) + (isRegularDuck ? 1 : 0)
       };
 
       return nextCareerStats;
     });
+
+    // Wicket batsman individual Firestore update
+    if (user) {
+      try {
+        const playerRef = doc(db, 'users', user.uid, 'players', String(outPlayerId));
+        const isGoldenDuck = finalSession.runs === 0 && finalSession.balls === 1;
+        const isRegularDuck = finalSession.runs === 0 && finalSession.balls > 1;
+
+        if (isGoldenDuck) {
+          await updateDoc(playerRef, {
+            'careerStats.goldenDucks': increment(1)
+          });
+        } else if (isRegularDuck) {
+          await updateDoc(playerRef, {
+            'careerStats.ducks': increment(1)
+          });
+        }
+      } catch (error) {
+        console.error("Firestore player document update failed for batsman wickets:", error);
+      }
+    }
 
     // 2. Save Dismissal Record
     setDismissals(prev => [
@@ -1174,6 +1272,10 @@ export default function App() {
       strikerId: isStrikerOut ? 0 : prev.strikerId,
       nonStrikerId: !isStrikerOut ? 0 : prev.nonStrikerId,
     }));
+
+    if (match.overBalls === 5) {
+      checkMaidenOver(match.bowlerId, [...match.currentOver, 'W']);
+    }
 
     // 5. UI Feedback & Open Selection Menu for Next Batsman
     const sessionBatting = sessionStats[outPlayerId]?.batting || { runs: 0, balls: 0 };
@@ -1231,13 +1333,18 @@ export default function App() {
       const isHundred = finalSession.runs >= 100;
       const wasCounted = !!currentSession.inningsCounted;
 
+      const isGoldenDuck = finalSession.runs === 0 && finalSession.balls === 1;
+      const isRegularDuck = finalSession.runs === 0 && finalSession.balls > 1;
+
       nextCareerStats[outPlayerId] = {
         ...originalOutStats,
         ballsFaced: originalOutStats.ballsFaced + 1,
         inningsBat: originalOutStats.inningsBat + (wasCounted ? 0 : 1),
         fifties: originalOutStats.fifties + (isFifty ? 1 : 0),
         hundreds: originalOutStats.hundreds + (isHundred ? 1 : 0),
-        highestScore: Math.max(originalOutStats.highestScore, finalSession.runs)
+        highestScore: Math.max(originalOutStats.highestScore, finalSession.runs),
+        goldenDucks: (originalOutStats.goldenDucks || 0) + (isGoldenDuck ? 1 : 0),
+        ducks: (originalOutStats.ducks || 0) + (isRegularDuck ? 1 : 0)
       };
 
       // Wicketkeeper stats
@@ -1289,6 +1396,10 @@ export default function App() {
       strikerId: 0, // Clear striker slot
     }));
 
+    if (match.overBalls === 5) {
+      checkMaidenOver(match.bowlerId, [...match.currentOver, 'W']);
+    }
+
     // 5. Update selected player's Firestore document
     if (user) {
       try {
@@ -1296,6 +1407,19 @@ export default function App() {
         await updateDoc(playerRef, {
           'careerStats.stumpings': increment(1)
         });
+
+        const batsmanRef = doc(db, 'users', user.uid, 'players', String(outPlayerId));
+        const isGoldenDuck = finalSession.runs === 0 && finalSession.balls === 1;
+        const isRegularDuck = finalSession.runs === 0 && finalSession.balls > 1;
+        if (isGoldenDuck) {
+          await updateDoc(batsmanRef, {
+            'careerStats.goldenDucks': increment(1)
+          });
+        } else if (isRegularDuck) {
+          await updateDoc(batsmanRef, {
+            'careerStats.ducks': increment(1)
+          });
+        }
       } catch (error) {
         console.error("Firestore player document update failed:", error);
         handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}/players/${keeperId}`);
@@ -1359,13 +1483,18 @@ export default function App() {
       const isHundred = finalSession.runs >= 100;
       const wasCounted = !!currentSession.inningsCounted;
 
+      const isGoldenDuck = finalSession.runs === 0 && finalSession.balls === 1;
+      const isRegularDuck = finalSession.runs === 0 && finalSession.balls > 1;
+
       nextCareerStats[outPlayerId] = {
         ...originalOutStats,
         ballsFaced: originalOutStats.ballsFaced + 1,
         inningsBat: originalOutStats.inningsBat + (wasCounted ? 0 : 1),
         fifties: originalOutStats.fifties + (isFifty ? 1 : 0),
         hundreds: originalOutStats.hundreds + (isHundred ? 1 : 0),
-        highestScore: Math.max(originalOutStats.highestScore, finalSession.runs)
+        highestScore: Math.max(originalOutStats.highestScore, finalSession.runs),
+        goldenDucks: (originalOutStats.goldenDucks || 0) + (isGoldenDuck ? 1 : 0),
+        ducks: (originalOutStats.ducks || 0) + (isRegularDuck ? 1 : 0)
       };
 
       // Fielder stats
@@ -1417,6 +1546,10 @@ export default function App() {
       strikerId: 0, // Clear striker slot
     }));
 
+    if (match.overBalls === 5) {
+      checkMaidenOver(match.bowlerId, [...match.currentOver, 'W']);
+    }
+
     // 5. Update selected player's Firestore document
     if (user) {
       try {
@@ -1424,6 +1557,19 @@ export default function App() {
         await updateDoc(playerRef, {
           'careerStats.catches': increment(1)
         });
+
+        const batsmanRef = doc(db, 'users', user.uid, 'players', String(outPlayerId));
+        const isGoldenDuck = finalSession.runs === 0 && finalSession.balls === 1;
+        const isRegularDuck = finalSession.runs === 0 && finalSession.balls > 1;
+        if (isGoldenDuck) {
+          await updateDoc(batsmanRef, {
+            'careerStats.goldenDucks': increment(1)
+          });
+        } else if (isRegularDuck) {
+          await updateDoc(batsmanRef, {
+            'careerStats.ducks': increment(1)
+          });
+        }
       } catch (error) {
         console.error("Firestore player document update failed:", error);
         handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}/players/${fielderId}`);
@@ -1439,7 +1585,7 @@ export default function App() {
     setIsWicketModalOpen({ isOpen: true, outPlayerId });
   };
 
-  const confirmRunOut = (outPlayerId: number, runsCompleted: number) => {
+  const confirmRunOutWithFielder = async (outPlayerId: number, runsCompleted: number, fielderId: number) => {
     const outPlayer = players.find(p => p.id === outPlayerId);
     const outPlayerName = outPlayer?.name || 'Unknown';
 
@@ -1472,7 +1618,15 @@ export default function App() {
           bestBowling: { wickets: 0, runs: 0 },
           wicketStreak: 0,
           dots: 0,
-          inningsBowl: 0
+          inningsBowl: 0,
+          catches: 0,
+          runOuts: 0,
+          throwComplete: 0,
+          stumpings: 0,
+          notOuts: 0,
+          catchDrop: 0,
+          missField: 0,
+          missedThrows: 0
         };
       };
 
@@ -1512,11 +1666,24 @@ export default function App() {
       const isFifty = finalSession.runs >= 50 && finalSession.runs < 100;
       const isHundred = finalSession.runs >= 100;
 
+      const isGoldenDuck = finalSession.runs === 0 && finalSession.balls === 1;
+      const isRegularDuck = finalSession.runs === 0 && finalSession.balls > 1;
+
       nextCareerStats[outPlayerId] = {
         ...currentStatsForOut,
         fifties: currentStatsForOut.fifties + (isFifty ? 1 : 0),
         hundreds: currentStatsForOut.hundreds + (isHundred ? 1 : 0),
-        highestScore: Math.max(currentStatsForOut.highestScore, finalSession.runs)
+        highestScore: Math.max(currentStatsForOut.highestScore, finalSession.runs),
+        goldenDucks: (currentStatsForOut.goldenDucks || 0) + (isGoldenDuck ? 1 : 0),
+        ducks: (currentStatsForOut.ducks || 0) + (isRegularDuck ? 1 : 0)
+      };
+
+      // Fielder locally: increment throwComplete and runOuts in career stats
+      const originalFielderStats = getStatsFromPrev(prev, fielderId);
+      nextCareerStats[fielderId] = {
+        ...originalFielderStats,
+        throwComplete: (originalFielderStats.throwComplete || 0) + 1,
+        runOuts: (originalFielderStats.runOuts || 0) + 1,
       };
 
       return nextCareerStats;
@@ -1528,6 +1695,7 @@ export default function App() {
       {
         batsmanId: outPlayerId,
         bowlerId: match.bowlerId,
+        fielderId: fielderId,
         timestamp: Date.now(),
       }
     ]);
@@ -1569,24 +1737,130 @@ export default function App() {
     });
 
     // 4. Update Live Scoreboard / Match State
-    const timelineLabel = runsCompleted === 0 ? 'W' : `${runsCompleted}+W`;
-
     setMatch(prev => ({
       ...prev,
       totalRuns: prev.totalRuns + runsCompleted,
       totalWickets: prev.totalWickets + 1,
       overBalls: prev.overBalls === 5 ? 0 : prev.overBalls + 1,
-      currentOver: [...prev.currentOver, timelineLabel],
+      currentOver: [...prev.currentOver, 'W'], // push 'W' to current over
       strikerId: isStrikerOut ? 0 : prev.strikerId,
       nonStrikerId: !isStrikerOut ? 0 : prev.nonStrikerId,
     }));
 
-    // 6. UI Feedback
-    setNotification(`Run Out (+${runsCompleted} runs) recorded for ${outPlayerName}`);
+    if (match.overBalls === 5 && runsCompleted === 0) {
+      checkMaidenOver(match.bowlerId, [...match.currentOver, 'W']);
+    }
 
-    // Close runOutModal, open next batsman modal
-    setRunOutModal({ isOpen: false, outPlayerId: null });
+    // 5. Update selected player's Firestore document
+    if (user) {
+      try {
+        const playerRef = doc(db, 'users', user.uid, 'players', String(fielderId));
+        await updateDoc(playerRef, {
+          'careerStats.throwComplete': increment(1)
+        });
+
+        const batsmanRef = doc(db, 'users', user.uid, 'players', String(outPlayerId));
+        const isGoldenDuck = finalSession.runs === 0 && finalSession.balls === 1;
+        const isRegularDuck = finalSession.runs === 0 && finalSession.balls > 1;
+        if (isGoldenDuck) {
+          await updateDoc(batsmanRef, {
+            'careerStats.goldenDucks': increment(1)
+          });
+        } else if (isRegularDuck) {
+          await updateDoc(batsmanRef, {
+            'careerStats.ducks': increment(1)
+          });
+        }
+      } catch (error) {
+        console.error("Firestore player document update failed:", error);
+        handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}/players/${fielderId}`);
+      }
+    }
+
+    // 6. UI Feedback
+    const fielderName = players.find(p => p.id === fielderId)?.name || 'Fielder';
+    setNotification(`Run Out recorded: Throw by ${fielderName}, dismissed ${outPlayerName} (+${runsCompleted} runs)`);
+
+    // Reset modals and state, then open Select New Batsman window
+    setIsFielderModalOpen({ isOpen: false, outPlayerId: null });
     setIsWicketModalOpen({ isOpen: true, outPlayerId });
+  };
+
+  const confirmMisfield = async (fielderId: number, type?: 'Catch Drop' | 'Over Throw' | 'Misfield' | 'Missed Throw') => {
+    const misfieldType = type || selectedMisfieldType || 'Misfield';
+
+    // 1. Update Career Stats local state
+    setCareerStats(prev => {
+      const getStatsFromPrev = (statsRecord: Record<number, CareerStats>, id: number): CareerStats => {
+        return statsRecord[id] || {
+          runs: 0, ballsFaced: 0, fours: 0, sixes: 0, fifties: 0, hundreds: 0,
+          inningsBat: 0, highestScore: 0,
+          wickets: 0, ballsBowled: 0, runsConceded: 0, hatTricks: 0,
+          bestBowling: { wickets: 0, runs: 0 },
+          wicketStreak: 0,
+          dots: 0,
+          inningsBowl: 0,
+          catches: 0,
+          runOuts: 0,
+          throwComplete: 0,
+          stumpings: 0,
+          notOuts: 0,
+          catchDrop: 0,
+          missField: 0,
+          missedThrows: 0,
+          overThrow: 0,
+        };
+      };
+
+      const nextCareerStats = { ...prev };
+      const originalFielderStats = getStatsFromPrev(prev, fielderId);
+
+      const updatedStats = { ...originalFielderStats };
+      if (misfieldType === 'Catch Drop') {
+        updatedStats.catchDrop = (originalFielderStats.catchDrop || 0) + 1;
+      } else if (misfieldType === 'Over Throw') {
+        updatedStats.overThrow = (originalFielderStats.overThrow || 0) + 1;
+      } else if (misfieldType === 'Missed Throw') {
+        updatedStats.missedThrows = (originalFielderStats.missedThrows || 0) + 1;
+      } else {
+        updatedStats.missField = (originalFielderStats.missField || 0) + 1;
+      }
+
+      nextCareerStats[fielderId] = updatedStats;
+      return nextCareerStats;
+    });
+
+    // 2. Update Firestore document (users/${userId}/players/${fielderId})
+    if (user) {
+      try {
+        const playerRef = doc(db, 'users', user.uid, 'players', String(fielderId));
+        let fieldToIncrement = '';
+        if (misfieldType === 'Catch Drop') {
+          fieldToIncrement = 'careerStats.catchDrop';
+        } else if (misfieldType === 'Over Throw') {
+          fieldToIncrement = 'careerStats.overThrow';
+        } else if (misfieldType === 'Missed Throw') {
+          fieldToIncrement = 'careerStats.missedThrows';
+        } else {
+          fieldToIncrement = 'careerStats.missField';
+        }
+
+        await updateDoc(playerRef, {
+          [fieldToIncrement]: increment(1)
+        });
+      } catch (error) {
+        console.error("Firestore player doc update failed for misfield:", error);
+        handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}/players/${fielderId}`);
+      }
+    }
+
+    // 3. UI Feedback
+    const fielderName = players.find(p => p.id === fielderId)?.name || 'Fielder';
+    setNotification(`${misfieldType} registered for ${fielderName}`);
+
+    // Close Fielder Modal and reset selected type
+    setIsFielderModalOpen({ isOpen: false, outPlayerId: null });
+    setSelectedMisfieldType(null);
   };
 
   const selectNewBatsman = (newPlayerId: number) => {
@@ -1781,7 +2055,11 @@ export default function App() {
         innings: Math.max(0, Number(uStats.innings) || 0),
         catchDrop: Math.max(0, Number(uStats.catchDrop) || 0),
         missField: Math.max(0, Number(uStats.missField) || 0),
-        missedThrows: Math.max(0, Number(uStats.missedThrows) || 0)
+        missedThrows: Math.max(0, Number(uStats.missedThrows) || 0),
+        overThrow: Math.max(0, Number(uStats.overThrow) || 0),
+        goldenDucks: Math.max(0, Number(uStats.goldenDucks) || 0),
+        ducks: Math.max(0, Number(uStats.ducks) || 0),
+        maidenOvers: Math.max(0, Number(uStats.maidenOvers) || 0)
       },
       updatedAt: new Date().toISOString()
     });
@@ -1887,6 +2165,49 @@ export default function App() {
 
   const renamePlayer = (id: number, newName: string) => {
     setPlayers(prev => prev.map(p => p.id === id ? { ...p, name: newName } : p));
+  };
+
+  const handleDeletePlayerConfirmed = async (playerId: number) => {
+    const playerName = players.find(p => p.id === playerId)?.name || 'Player';
+    try {
+      if (user) {
+        const pathStr = `users/${user.uid}/players/${playerId}`;
+        const playerRef = doc(db, 'users', user.uid, 'players', String(playerId));
+        try {
+          await deleteDoc(playerRef);
+        } catch (writeError) {
+          handleFirestoreError(writeError, OperationType.DELETE, pathStr);
+        }
+      }
+      
+      setPlayers(prev => prev.filter(p => p.id !== playerId));
+      setCareerStats(prev => {
+        const nextStats = { ...prev };
+        delete nextStats[playerId];
+        return nextStats;
+      });
+      
+      setMatch(prev => {
+        const nextMatch = { ...prev };
+        if (nextMatch.strikerId === playerId) {
+          nextMatch.strikerId = players.find(p => p.id !== playerId)?.id || 0;
+        }
+        if (nextMatch.nonStrikerId === playerId) {
+          nextMatch.nonStrikerId = players.find(p => p.id !== playerId)?.id || 0;
+        }
+        if (nextMatch.bowlerId === playerId) {
+          nextMatch.bowlerId = players.find(p => p.id !== playerId)?.id || 0;
+        }
+        return nextMatch;
+      });
+      
+      setNotification(`${playerName} permanently deleted.`);
+    } catch (error) {
+      console.error("Firestore delete failed", error);
+      setNotification("Firestore delete failed: " + (error instanceof Error ? error.message : String(error)));
+    } finally {
+      setDeleteConfirmPlayerId(null);
+    }
   };
 
   const updateAvatar = (id: number, avatar: string) => {
@@ -2305,74 +2626,33 @@ export default function App() {
       </nav>
 
       <main className="pb-24 pt-8 px-4 max-w-lg mx-auto">
-        {/* User bar / Connection status */}
-        <div className="flex justify-between items-center bg-[#0D153B] border border-[#FF1F7E]/25 rounded-2xl px-4 py-3 mb-6 font-mono text-xs text-slate-300 shadow-md">
-          {user ? (
-            <div className="flex items-center justify-between w-full">
-              <div className="flex items-center gap-2">
-                {user.photoURL ? (
-                  <img src={user.photoURL} alt="" className="w-6 h-6 rounded-full border border-[#FF1F7E]/30 object-cover" referrerPolicy="no-referrer" />
-                ) : (
-                  <div className="w-6 h-6 rounded-full bg-[#FF1F7E]/20 text-[#FF1F7E] flex items-center justify-center text-[10px] font-bold">
-                    {user.displayName?.charAt(0).toUpperCase() || 'U'}
-                  </div>
-                )}
-                <span className="text-white font-bold max-w-[120px] truncate text-[11px]">{user.displayName}</span>
-                <span className="text-[8px] bg-green-500/15 text-green-400 px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold border border-green-500/25">Synced</span>
-              </div>
-              <button 
-                onClick={handleLogout}
-                className="text-[10px] text-red-400 hover:text-red-300 uppercase tracking-widest font-bold underline cursor-pointer"
-              >
-                Logout
-              </button>
-            </div>
-          ) : (
-            <div className="flex items-center justify-between w-full">
-              <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-amber-500 font-bold">
-                <span className="relative flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
-                </span>
-                Local Guest
-              </div>
-              <button 
-                onClick={() => {
-                  setIsGuestMode(false);
-                  setUser(null);
-                }}
-                className="text-[10px] text-[#FF1F7E] hover:text-[#FF4294] uppercase tracking-widest font-bold flex items-center gap-1 bg-[#FF1F7E]/10 border border-[#FF1F7E]/35 px-3 py-1 rounded-lg hover:bg-[#FF1F7E]/20 transition-all cursor-pointer"
-              >
-                Backup on Cloud
-              </button>
-            </div>
-          )}
-        </div>
         {/* Header Stat */}
-        <div className="flex justify-between items-center mb-8 border-b border-[#FF1F7E]/10 pb-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-[#FF1F7E] rounded-full flex items-center justify-center animate-pulse shadow-md shadow-[#FF1F7E]/30">
-              <RotateCw size={20} className="text-white" />
+        {activeTab === 'live' && (
+          <div className="flex justify-between items-center mb-8 border-b border-[#FF1F7E]/10 pb-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-[#FF1F7E] rounded-full flex items-center justify-center animate-pulse shadow-md shadow-[#FF1F7E]/30">
+                <RotateCw size={20} className="text-white" />
+              </div>
+              <div>
+                <h1 className="text-xl font-mono tracking-tighter leading-none uppercase text-white">
+                  Infinite Loop
+                </h1>
+                <p className="text-[10px] uppercase font-mono text-slate-400 mt-1 tracking-widest">Continuous Session</p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-xl font-mono tracking-tighter leading-none uppercase text-white">
-                Infinite Loop
-              </h1>
-              <p className="text-[10px] uppercase font-mono text-slate-400 mt-1 tracking-widest">Continuous Session</p>
+            <div className="text-right">
+              <p className="text-2xl font-mono text-white">
+                {match.totalRuns}/{match.totalWickets}
+              </p>
+              <p className="text-[10px] uppercase font-mono text-slate-300 tracking-widest">
+                Score (Ex: {match.extras || 0})
+              </p>
+              <p className="text-[9px] uppercase font-mono text-[#FFA000] tracking-widest mt-1 font-bold">
+                Active Over: 0.{match.overBalls}
+              </p>
             </div>
           </div>
-          <div className="text-right">
-            <p className="text-2xl font-mono text-white">
-              {match.totalRuns}/{match.totalWickets}
-            </p>
-            <p className="text-[10px] uppercase font-mono text-slate-300 tracking-widest">
-              Score (Ex: {match.extras || 0})
-            </p>
-            <p className="text-[9px] uppercase font-mono text-[#FFA000] tracking-widest mt-1 font-bold">
-              Active Over: 0.{match.overBalls}
-            </p>
-          </div>
-        </div>
+        )}
 
         {activeTab === 'live' && (
           <div className="space-y-6">
@@ -2494,7 +2774,7 @@ export default function App() {
                     {isStriker && bat.id !== 0 && (
                       <>
                         <div className="grid grid-cols-4 gap-2 mt-4">
-                          {[0, 'WICKET', 1, 2, 3, 4, 6].map(r => {
+                          {[0, 'WICKET', 1, 2, 3, 4, 6, 'MISFIELD'].map(r => {
                             if (r === 'WICKET') {
                               return (
                                 <button
@@ -2504,6 +2784,20 @@ export default function App() {
                                 >
                                   <Skull size={15} className="text-[#FF0000]" />
                                   <span className="leading-none uppercase tracking-wider text-[#FF0000]">WICKET</span>
+                                </button>
+                              );
+                            }
+                            if (r === 'MISFIELD') {
+                              return (
+                                <button
+                                  key="misfield"
+                                  onClick={() => {
+                                    setIsMisfieldTypeModalOpen(true);
+                                  }}
+                                  className="py-2 bg-amber-950/40 hover:bg-amber-900/60 text-amber-300 border-2 border-amber-500/40 hover:border-amber-400 rounded-lg font-mono text-[10px] font-extrabold transition-all active:scale-95 flex flex-col items-center justify-center gap-1 shadow-md shadow-black/10"
+                                >
+                                  <AlertCircle size={15} className="text-amber-400" />
+                                  <span className="leading-none uppercase tracking-wider text-amber-300">Misfield</span>
                                 </button>
                               );
                             }
@@ -2563,79 +2857,90 @@ export default function App() {
             </div>
  
             {/* Bowler Section */}
-            <div className="p-6 rounded-xl border border-dashed border-[#FF1F7E]/30 bg-[#0C1235]/95 shadow-md">
-              <div className="flex justify-between items-center mb-6">
-                <div className="flex gap-4 flex-1">
-                  <div className="w-12 h-12 rounded-full overflow-hidden bg-white/10 border border-white/10 flex-shrink-0">
-                    {players.find(p => p.id === match.bowlerId)?.avatar ? (
-                      <img src={players.find(p => p.id === match.bowlerId)?.avatar} alt="avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center bg-[#FF1F7E]/10 text-[#FF1F7E] rounded-full">
-                        <User size={20} />
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex-1">
-                    <span className="text-[10px] uppercase font-mono text-slate-400 tracking-widest mb-1 block">Current Bowler</span>
-                    <select 
-                      value={match.bowlerId}
-                      onChange={(e) => setMatch(prev => ({ ...prev, bowlerId: Number(e.target.value) }))}
-                      className="text-xl font-mono bg-transparent border-none focus:ring-0 w-full appearance-none text-white p-0 cursor-pointer font-bold"
+            <div className="p-6 rounded-xl border border-dashed border-[#FF1F7E]/30 bg-[#0C1235]/95 shadow-md flex flex-col gap-5">
+              
+              {/* Row 1: Bowler Info & Avatar */}
+              <div className="flex items-center gap-4 w-full">
+                <div className="w-12 h-12 rounded-full overflow-hidden bg-white/10 border border-white/10 flex-shrink-0">
+                  {players.find(p => p.id === match.bowlerId)?.avatar ? (
+                    <img src={players.find(p => p.id === match.bowlerId)?.avatar} alt="avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center bg-[#FF1F7E]/10 text-[#FF1F7E] rounded-full">
+                      <User size={20} />
+                    </div>
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <span className="text-[10px] uppercase font-mono text-slate-400 tracking-widest mb-0.5 block">Current Bowler</span>
+                  <select 
+                    value={match.bowlerId}
+                    onChange={(e) => setMatch(prev => ({ ...prev, bowlerId: Number(e.target.value) }))}
+                    className="text-lg font-mono bg-transparent border-none focus:ring-0 w-full appearance-none text-white p-0 cursor-pointer font-bold truncate focus:outline-none"
+                  >
+                    {players.map(p => (
+                      <option key={p.id} value={p.id} className="bg-[#0C1235] text-white">{p.name}</option>
+                    ))}
+                  </select>
+                  <div className="flex items-center gap-3 mt-1 m-0">
+                    <button 
+                      onClick={() => {
+                        resetPlayerSession(match.bowlerId, 'bowling');
+                        setMatch(prev => ({ ...prev, overBalls: 0, currentOver: [] }));
+                      }}
+                      className="text-[9px] uppercase font-mono text-[#FFA000]/70 hover:text-[#FFA000] transition-colors flex items-center gap-1 active:scale-95"
                     >
-                      {players.map(p => (
-                        <option key={p.id} value={p.id} className="bg-[#0C1235]">{p.name}</option>
-                      ))}
-                    </select>
-                    <div className="flex items-center gap-3 mt-1">
-                      <button 
-                        onClick={() => {
-                          resetPlayerSession(match.bowlerId, 'bowling');
-                          setMatch(prev => ({ ...prev, overBalls: 0, currentOver: [] }));
-                        }}
-                        className="text-[9px] uppercase font-mono text-[#FFA000]/70 hover:text-[#FFA000] transition-colors flex items-center gap-1"
-                      >
-                        <RotateCw size={10} /> Reset Session
-                      </button>
-                    </div>
-                    <div className="flex gap-3 mt-2">
-                      <span className="text-[10px] font-mono text-[#FF1F7E] uppercase tracking-wider font-bold">
-                        Wkts: {sessionStats[match.bowlerId]?.bowling.wickets || 0}
-                      </span>
-                      <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider">
-                        Eco: {((sessionStats[match.bowlerId]?.bowling.runs || 0) / (sessionStats[match.bowlerId]?.bowling.balls || 1) * 6).toFixed(1)}
-                      </span>
-                    </div>
+                      <RotateCw size={10} /> Reset Session
+                    </button>
                   </div>
                 </div>
-                <div className="flex gap-2">
-                  <button 
-                    onClick={() => setExtraModal({ isOpen: true, type: 'wide' })}
-                    className="px-4 py-2 bg-[#080D32] hover:bg-[#FF1F7E]/20 hover:text-white border border-white/10 rounded-lg font-mono text-sm uppercase text-slate-100 font-bold transition-all shadow-sm"
-                  >
-                    WD
-                  </button>
-                  <button 
-                    onClick={() => setExtraModal({ isOpen: true, type: 'noball' })}
-                    className="px-4 py-2 bg-[#080D32] hover:bg-[#FF1F7E]/20 hover:text-white border border-white/10 rounded-lg font-mono text-sm uppercase text-slate-100 font-bold transition-all shadow-sm"
-                  >
-                    NB
-                  </button>
-                  <button 
-                    onClick={() => setExtraModal({ isOpen: true, type: 'lb' })}
-                    className="px-4 py-2 bg-[#080D32] hover:bg-[#FF1F7E]/20 hover:text-white border border-white/10 rounded-lg font-mono text-sm uppercase text-slate-100 font-bold transition-all shadow-sm"
-                  >
-                    LB
-                  </button>
-                  <button 
-                    onClick={() => setExtraModal({ isOpen: true, type: 'by' })}
-                    className="px-4 py-2 bg-[#080D32] hover:bg-[#FF1F7E]/20 hover:text-white border border-white/10 rounded-lg font-mono text-sm uppercase text-slate-100 font-bold transition-all shadow-sm"
-                  >
-                    B
-                  </button>
+              </div>
+
+              {/* Row 2: Extra Action Buttons (WD, NB, LB, B) */}
+              <div className="flex gap-2 justify-between w-full border-t border-white/5 pt-3">
+                <button 
+                  onClick={() => setExtraModal({ isOpen: true, type: 'wide' })}
+                  className="flex-1 h-10 bg-[#1D4ED8] hover:bg-[#1E40AF] active:scale-95 text-white rounded-lg font-mono text-xs uppercase font-extrabold transition-all shadow-md flex items-center justify-center border border-blue-600/20"
+                >
+                  WD
+                </button>
+                <button 
+                  onClick={() => setExtraModal({ isOpen: true, type: 'noball' })}
+                  className="flex-1 h-10 bg-[#1D4ED8] hover:bg-[#1E40AF] active:scale-95 text-white rounded-lg font-mono text-xs uppercase font-extrabold transition-all shadow-md flex items-center justify-center border border-blue-600/20"
+                >
+                  NB
+                </button>
+                <button 
+                  onClick={() => setExtraModal({ isOpen: true, type: 'lb' })}
+                  className="flex-1 h-10 bg-[#1D4ED8] hover:bg-[#1E40AF] active:scale-95 text-white rounded-lg font-mono text-xs uppercase font-extrabold transition-all shadow-md flex items-center justify-center border border-blue-600/20"
+                >
+                  LB
+                </button>
+                <button 
+                  onClick={() => setExtraModal({ isOpen: true, type: 'by' })}
+                  className="flex-1 h-10 bg-[#1D4ED8] hover:bg-[#1E40AF] active:scale-95 text-white rounded-lg font-mono text-xs uppercase font-extrabold transition-all shadow-md flex items-center justify-center border border-blue-600/20"
+                >
+                  B
+                </button>
+              </div>
+
+              {/* Row 3: Bowling Stats (Wkts, Eco) */}
+              <div className="flex gap-4 border-t border-b border-white/5 py-2.5 w-full">
+                <div className="flex-1 text-center border-r border-white/5 flex flex-col justify-center">
+                  <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider block mb-0.5">Wickets</span>
+                  <span className="text-base font-mono text-[#FF1F7E] font-bold leading-none">
+                    {sessionStats[match.bowlerId]?.bowling.wickets || 0}
+                  </span>
+                </div>
+                <div className="flex-1 text-center flex flex-col justify-center">
+                  <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider block mb-0.5">Economy</span>
+                  <span className="text-base font-mono text-slate-200 font-bold leading-none">
+                    {((sessionStats[match.bowlerId]?.bowling.runs || 0) / (sessionStats[match.bowlerId]?.bowling.balls || 1) * 6).toFixed(1)}
+                  </span>
                 </div>
               </div>
  
-              <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none">
+              {/* Row 4: Centered Recent Balls Circles */}
+              <div className="flex gap-2 justify-center items-center py-2 px-1 overflow-x-auto scrollbar-none w-full">
                 {match.currentOver.map((ball, i) => {
                   const isDot = ball === 0 || ball === '0';
                   const isWD = typeof ball === 'string' && ball.toLowerCase().includes('wd');
@@ -2890,7 +3195,11 @@ export default function App() {
               ...x,
               name: editProfileName,
               jerseyNo: editProfileJersey ? Number(editProfileJersey) : undefined,
-              dob: editProfileDob || undefined
+              dob: editProfileDob || undefined,
+              battingStyle: battingStyle || undefined,
+              bowlingStyle: bowlingStyle || undefined,
+              playerRole: playerRole || undefined,
+              currentTeam: currentTeam || undefined
             } : x));
 
             if (editCareerStats) {
@@ -2912,6 +3221,10 @@ export default function App() {
                   name: editProfileName,
                   jerseyNo: editProfileJersey ? Number(editProfileJersey) : null,
                   dob: editProfileDob || null,
+                  battingStyle: battingStyle || null,
+                  bowlingStyle: bowlingStyle || null,
+                  playerRole: playerRole || null,
+                  currentTeam: currentTeam || null,
                   careerStats: {
                     inningsBat: Math.max(0, Number(finalCareerStats.inningsBat) || 0),
                     runs: Math.max(0, Number(finalCareerStats.runs) || 0),
@@ -2939,7 +3252,11 @@ export default function App() {
                     stumpings: Math.max(0, Number(finalCareerStats.stumpings) || 0),
                     catchDrop: Math.max(0, Number(finalCareerStats.catchDrop) || 0),
                     missField: Math.max(0, Number(finalCareerStats.missField) || 0),
-                    missedThrows: Math.max(0, Number(finalCareerStats.missedThrows) || 0)
+                    missedThrows: Math.max(0, Number(finalCareerStats.missedThrows) || 0),
+                    overThrow: Math.max(0, Number(finalCareerStats.overThrow) || 0),
+                    goldenDucks: Math.max(0, Number(finalCareerStats.goldenDucks) || 0),
+                    ducks: Math.max(0, Number(finalCareerStats.ducks) || 0),
+                    maidenOvers: Math.max(0, Number(finalCareerStats.maidenOvers) || 0)
                   },
                   updatedAt: new Date().toISOString()
                 };
@@ -2997,6 +3314,10 @@ export default function App() {
                           setEditProfileName(p.name);
                           setEditProfileJersey(p.jerseyNo ? String(p.jerseyNo) : "");
                           setEditProfileDob(p.dob || "");
+                          setBattingStyle(p.battingStyle || "");
+                          setBowlingStyle(p.bowlingStyle || "");
+                          setPlayerRole(p.playerRole || "");
+                          setCurrentTeam(p.currentTeam || "");
                         }}
                         className="flex items-center gap-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-gray-400 hover:text-white transition-all"
                       >
@@ -3009,6 +3330,10 @@ export default function App() {
                       onClick={() => {
                         setIsEditingProfile(true);
                         setEditCareerStats({ ...s });
+                        setBattingStyle(p.battingStyle || "");
+                        setBowlingStyle(p.bowlingStyle || "");
+                        setPlayerRole(p.playerRole || "");
+                        setCurrentTeam(p.currentTeam || "");
                       }}
                       className="flex items-center gap-1 bg-[#FF1F7E]/15 hover:bg-[#FF1F7E]/30 border border-[#FF1F7E]/45 rounded-xl px-3 py-2 text-xs font-mono font-bold text-[#FF1F7E] transition-all animate-in fade-in cursor-pointer animate-duration-200"
                     >
@@ -3045,7 +3370,6 @@ export default function App() {
                         </span>
                       </div>
                     </div>
-
                     {/* Profile Info Edit Form vs Read Only view */}
                      {isEditingProfile ? (
                       <div className="w-full space-y-4 font-mono text-xs">
@@ -3078,6 +3402,62 @@ export default function App() {
                             className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-[#FF1F7E]/50 transition-colors"
                           />
                         </div>
+                        <div>
+                          <label className="text-gray-400 block mb-1 uppercase tracking-wider text-[10px]">Current Team / Club Name</label>
+                          <input
+                            type="text"
+                            value={currentTeam}
+                            onChange={(e) => setCurrentTeam(e.target.value)}
+                            className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-[#FF1F7E]/50 transition-colors"
+                            placeholder="Club/Team Name"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-gray-400 block mb-1 uppercase tracking-wider text-[10px]">Player Primary Role</label>
+                          <select
+                            value={playerRole}
+                            onChange={(e) => setPlayerRole(e.target.value)}
+                            className="w-full bg-[#0D153B] border border-white/10 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-[#FF1F7E]/50 transition-colors cursor-pointer"
+                          >
+                            <option value="" className="bg-[#0D153B] text-gray-400">Select Role</option>
+                            <option value="Batsman" className="bg-[#0D153B] text-white">Batsman</option>
+                            <option value="Bowler" className="bg-[#0D153B] text-white">Bowler</option>
+                            <option value="All-Rounder" className="bg-[#0D153B] text-white">All-Rounder</option>
+                            <option value="Wicket-Keeper Batsman" className="bg-[#0D153B] text-white">Wicket-Keeper Batsman</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="text-gray-400 block mb-1 uppercase tracking-wider text-[10px]">Batting Style</label>
+                          <select
+                            value={battingStyle}
+                            onChange={(e) => setBattingStyle(e.target.value)}
+                            className="w-full bg-[#0D153B] border border-white/10 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-[#FF1F7E]/50 transition-colors cursor-pointer"
+                          >
+                            <option value="" className="bg-[#0D153B] text-gray-400">Select Batting Style</option>
+                            <option value="Right Hand Batsman" className="bg-[#0D153B] text-white">Right Hand Batsman</option>
+                            <option value="Left Hand Batsman" className="bg-[#0D153B] text-white">Left Hand Batsman</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="text-gray-400 block mb-1 uppercase tracking-wider text-[10px]">Bowling Action & Type</label>
+                          <select
+                            value={bowlingStyle}
+                            onChange={(e) => setBowlingStyle(e.target.value)}
+                            className="w-full bg-[#0D153B] border border-white/10 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-[#FF1F7E]/50 transition-colors cursor-pointer"
+                          >
+                            <option value="" className="bg-[#0D153B] text-gray-400">Select Bowling Style</option>
+                            <option value="Right Arm Fast" className="bg-[#0D153B] text-white">Right Arm Fast</option>
+                            <option value="Right Arm Medium Fast" className="bg-[#0D153B] text-white">Right Arm Medium Fast</option>
+                            <option value="Left Arm Fast" className="bg-[#0D153B] text-white">Left Arm Fast</option>
+                            <option value="Left Arm Medium Fast" className="bg-[#0D153B] text-white">Left Arm Medium Fast</option>
+                            <option value="Right Arm Off Spinner" className="bg-[#0D153B] text-white">Right Arm Off Spinner</option>
+                            <option value="Right Arm Leg Spinner" className="bg-[#0D153B] text-white">Right Arm Leg Spinner</option>
+                            <option value="Right Arm Off Cutter" className="bg-[#0D153B] text-white">Right Arm Off Cutter</option>
+                            <option value="Right Arm Leg Cutter" className="bg-[#0D153B] text-white">Right Arm Leg Cutter</option>
+                            <option value="Left Arm Orthodox (Off Spinner)" className="bg-[#0D153B] text-white">Left Arm Orthodox (Off Spinner)</option>
+                            <option value="Left Arm Unorthodox (Leg Spinner)" className="bg-[#0D153B] text-white">Left Arm Unorthodox (Leg Spinner)</option>
+                          </select>
+                        </div>
                       </div>
                     ) : (
                       <div className="text-center w-full">
@@ -3090,6 +3470,41 @@ export default function App() {
                         {/* Dynamic Age Counter */}
                         <div className="mt-2 text-xs font-mono font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1 rounded-lg inline-block">
                           {p.dob ? ageText : "Age: Unknown"}
+                        </div>
+
+                        {/* Player Role & Styles Display */}
+                        <div className="mt-5 w-full text-left">
+                          <span className="text-[10px] font-bold font-mono tracking-widest text-[#FF1F7E] uppercase block mb-2">PLAYER PROFILE DETAILS</span>
+                          <div className="bg-black/35 border border-white/5 rounded-xl p-3.5 space-y-2 text-[10px] font-mono uppercase tracking-wider text-gray-400">
+                            <div className="flex justify-between items-center py-0.5 font-sans">
+                              <span className="flex items-center gap-1.5 text-gray-400 font-medium font-mono">
+                                <span className="w-1.5 h-1.5 rounded-full bg-[#FF1F7E]" />
+                                Club / Team:
+                              </span>
+                              <span className="text-white font-bold text-xs capitalize">{p.currentTeam || "N/A"}</span>
+                            </div>
+                            <div className="flex justify-between items-center py-0.5 border-t border-white/5 pt-2">
+                              <span className="flex items-center gap-1.5 text-gray-400 font-medium">
+                                <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
+                                Primary Role:
+                              </span>
+                              <span className="text-white font-bold text-xs">{p.playerRole || "N/A"}</span>
+                            </div>
+                            <div className="flex justify-between items-center py-0.5 border-t border-white/5 pt-2">
+                              <span className="flex items-center gap-1.5 text-gray-400 font-medium">
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                                Batting Style:
+                              </span>
+                              <span className="text-white font-bold text-xs">{p.battingStyle || "N/A"}</span>
+                            </div>
+                            <div className="flex justify-between items-center py-0.5 border-t border-white/5 pt-2">
+                              <span className="flex items-center gap-1.5 text-gray-400 font-medium">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                                Bowling Type:
+                              </span>
+                              <span className="text-white font-bold text-xs text-right max-w-[150px] truncate" title={p.bowlingStyle || "N/A"}>{p.bowlingStyle || "N/A"}</span>
+                            </div>
+                          </div>
                         </div>
                       </div>
                     )}
@@ -3317,6 +3732,44 @@ export default function App() {
                               )}
                             </div>
                           </div>
+
+                          <div className="grid grid-cols-2 gap-4 text-center mt-4">
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block text-yellow-500">Golden Ducks</span>
+                              {isEditingProfile ? (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={activeStats.goldenDucks || 0}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, Number(e.target.value) || 0);
+                                    setEditCareerStats(prev => prev ? { ...prev, goldenDucks: val } : null);
+                                  }}
+                                  className="w-full bg-white/5 text-center border border-white/10 rounded-lg px-2 py-1 mt-1 font-mono text-sm text-yellow-500 focus:outline-none focus:border-orange-500"
+                                />
+                              ) : (
+                                <span className="text-lg font-mono font-bold text-yellow-500 mt-1">{activeStats.goldenDucks || 0}</span>
+                              )}
+                            </div>
+
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block">Ducks</span>
+                              {isEditingProfile ? (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={activeStats.ducks || 0}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, Number(e.target.value) || 0);
+                                    setEditCareerStats(prev => prev ? { ...prev, ducks: val } : null);
+                                  }}
+                                  className="w-full bg-white/5 text-center border border-white/10 rounded-lg px-2 py-1 mt-1 font-mono text-sm text-white focus:outline-none focus:border-orange-500"
+                                />
+                              ) : (
+                                <span className="text-lg font-mono font-bold text-white mt-1">{activeStats.ducks || 0}</span>
+                              )}
+                            </div>
+                          </div>
                         </div>
 
                         {/* Bowling Record Block */}
@@ -3456,7 +3909,7 @@ export default function App() {
                             </div>
                           </div>
 
-                          <div className="grid grid-cols-2 gap-4 text-center">
+                          <div className="grid grid-cols-3 gap-4 text-center">
                             <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
                               <span className="text-[10px] font-mono text-gray-400 block">Dots</span>
                               {isEditingProfile ? (
@@ -3472,6 +3925,24 @@ export default function App() {
                                 />
                               ) : (
                                 <span className="text-lg font-mono font-bold text-white mt-1">{activeStats.dots || 0}</span>
+                              )}
+                            </div>
+
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block text-blue-400">Maidens</span>
+                              {isEditingProfile ? (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={activeStats.maidenOvers || 0}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, Number(e.target.value) || 0);
+                                    setEditCareerStats(prev => prev ? { ...prev, maidenOvers: val } : null);
+                                  }}
+                                  className="w-full bg-white/5 text-center border border-white/10 rounded-lg px-2 py-1 mt-1 font-mono text-sm text-blue-400 focus:outline-none focus:border-blue-500"
+                                />
+                              ) : (
+                                <span className="text-lg font-mono font-bold text-blue-400 mt-1">{activeStats.maidenOvers || 0}</span>
                               )}
                             </div>
 
@@ -3603,10 +4074,28 @@ export default function App() {
                             </div>
                           </div>
 
-                          <div className="grid grid-cols-1 gap-4 text-center">
+                          <div className="grid grid-cols-2 gap-4 text-center">
                             <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
                               <span className="text-[10px] font-mono text-gray-400 block text-center leading-3">Field Accuracy</span>
                               <span className="text-lg font-mono font-bold text-emerald-400 mt-1">{fieldingAccuracy}</span>
+                            </div>
+
+                            <div className="bg-white/5 p-3 rounded-xl border border-white/5 flex flex-col justify-between items-center uppercase">
+                              <span className="text-[10px] font-mono text-gray-400 block text-center leading-3">Over Throws</span>
+                              {isEditingProfile ? (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={activeStats.overThrow || 0}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, Number(e.target.value) || 0);
+                                    setEditCareerStats(prev => prev ? { ...prev, overThrow: val } : null);
+                                  }}
+                                  className="w-full bg-white/5 text-center border border-white/10 rounded-lg px-2 py-1 mt-1 font-mono text-sm text-red-400 focus:outline-none focus:border-emerald-500"
+                                />
+                              ) : (
+                                <span className="text-lg font-mono font-bold text-red-400 mt-1">{activeStats.overThrow || 0}</span>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -3688,6 +4177,10 @@ export default function App() {
                                     setEditProfileName(p.name);
                                     setEditProfileJersey(p.jerseyNo ? String(p.jerseyNo) : "");
                                     setEditProfileDob(p.dob || "");
+                                    setBattingStyle(p.battingStyle || "");
+                                    setBowlingStyle(p.bowlingStyle || "");
+                                    setPlayerRole(p.playerRole || "");
+                                    setCurrentTeam(p.currentTeam || "");
                                   }}
                                   className="p-1 text-[#FF1F7E] hover:bg-[#FF1F7E]/10 rounded transition-all w-fit"
                                   title="View Player"
@@ -3760,6 +4253,10 @@ export default function App() {
                                     setEditProfileName(p.name);
                                     setEditProfileJersey(p.jerseyNo ? String(p.jerseyNo) : "");
                                     setEditProfileDob(p.dob || "");
+                                    setBattingStyle(p.battingStyle || "");
+                                    setBowlingStyle(p.bowlingStyle || "");
+                                    setPlayerRole(p.playerRole || "");
+                                    setCurrentTeam(p.currentTeam || "");
                                   }}
                                   className="p-1 text-blue-400 hover:bg-blue-400/10 rounded transition-all w-fit"
                                   title="View Player"
@@ -3825,123 +4322,457 @@ export default function App() {
         )}
  
         {activeTab === 'settings' && (
-          <div className="space-y-8 animate-in fade-in duration-500">
-            <section className="space-y-4">
-              <h2 className="text-xl font-mono uppercase tracking-widest flex items-center gap-2">
-                <User size={20} className="text-[#FF1F7E]" /> Player Management
-              </h2>
-              
-              <div className="flex gap-2">
-                <input 
-                  type="text"
-                  placeholder="New Player Name"
-                  id="newPlayerName"
-                  className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3 font-mono focus:outline-none focus:border-[#FF1F7E]/50 text-white"
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      const input = e.currentTarget;
+          <div className="space-y-8 animate-in fade-in duration-500 pb-16">
+            {/* Dedicated WhatsApp-style Sticky Top Header */}
+            <div className="sticky -top-8 z-30 bg-[#080d32] -mx-4 px-4 py-4 border-b border-white/10 flex items-center justify-between shadow-xl">
+              <h1 className="text-2xl font-sans font-bold text-white">
+                Settings
+              </h1>
+              <button 
+                onClick={() => setNotification("Search settings matches coming soon!")}
+                className="p-2 hover:bg-white/15 rounded-full text-slate-200 hover:text-white transition-all active:scale-90 cursor-pointer"
+                aria-label="Search Settings"
+              >
+                <Search size={20} className="text-[#FF1F7E] drop-shadow-[0_0_8px_#FF1F7E]" />
+              </button>
+            </div>
+
+            {activeSection === 'menu' && (
+              <div className="space-y-3 animate-in slide-in-from-bottom-4 duration-300">
+                {/* User bar / Connection status */}
+                <div className="flex justify-between items-center bg-[#0D153B] border border-[#FF1F7E]/25 rounded-2xl px-4 py-3 mb-6 font-mono text-xs text-slate-300 shadow-md">
+                  {user ? (
+                    <div className="flex items-center justify-between w-full">
+                      <div className="flex items-center gap-2">
+                        {user.photoURL ? (
+                          <img src={user.photoURL} alt="" className="w-6 h-6 rounded-full border border-[#FF1F7E]/30 object-cover" referrerPolicy="no-referrer" />
+                        ) : (
+                          <div className="w-6 h-6 rounded-full bg-[#FF1F7E]/20 text-[#FF1F7E] flex items-center justify-center text-[10px] font-bold">
+                            {user.displayName?.charAt(0).toUpperCase() || 'U'}
+                          </div>
+                        )}
+                        <span className="text-white font-bold max-w-[120px] truncate text-[11px]">{user.displayName}</span>
+                        <span className="text-[8px] bg-green-500/15 text-green-400 px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold border border-green-500/25">Synced</span>
+                      </div>
+                      <button 
+                        onClick={handleLogout}
+                        className="text-[10px] text-red-400 hover:text-red-300 uppercase tracking-widest font-bold underline cursor-pointer"
+                      >
+                        Logout
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-between w-full">
+                      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-amber-500 font-bold">
+                        <span className="relative flex h-2 w-2">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                        </span>
+                        Local Guest
+                      </div>
+                      <button 
+                        onClick={() => {
+                          setIsGuestMode(false);
+                          setUser(null);
+                        }}
+                        className="text-[10px] text-[#FF1F7E] hover:text-[#FF4294] uppercase tracking-widest font-bold flex items-center gap-1 bg-[#FF1F7E]/10 border border-[#FF1F7E]/35 px-3 py-1 rounded-lg hover:bg-[#FF1F7E]/20 transition-all cursor-pointer"
+                      >
+                        Backup on Cloud
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* 1. User Profile */}
+                <div 
+                  onClick={() => setActiveSection('user_profile')}
+                  className="p-5 bg-gradient-to-r from-[#0D153B] to-[#121B48] border border-[#FF1F7E]/10 hover:border-[#FF1F7E]/30 rounded-2xl flex items-center justify-between cursor-pointer group transition-all duration-300 shadow-md hover:shadow-[#FF1F7E]/5"
+                >
+                  <div className="flex items-center gap-4">
+                    <div className="w-10 h-10 rounded-xl bg-purple-500/10 flex items-center justify-center text-purple-400 group-hover:bg-purple-500/25 transition-colors duration-300">
+                      <User size={20} />
+                    </div>
+                    <div>
+                      <h3 className="text-white font-sans font-bold text-base group-hover:text-[#FF1F7E] transition-colors duration-200">User Profile</h3>
+                      <p className="text-xs text-gray-400 font-sans">View your profile details and account status</p>
+                    </div>
+                  </div>
+                  <ChevronRight size={18} className="text-gray-500 group-hover:text-[#FF1F7E] group-hover:translate-x-1 transition-all" />
+                </div>
+
+                {/* 2. Player Management */}
+                <div 
+                  onClick={() => setActiveSection('player_management')}
+                  className="p-5 bg-gradient-to-r from-[#0D153B] to-[#121B48] border border-[#FF1F7E]/10 hover:border-[#FF1F7E]/30 rounded-2xl flex items-center justify-between cursor-pointer group transition-all duration-300 shadow-md hover:shadow-[#FF1F7E]/5"
+                >
+                  <div className="flex items-center gap-4">
+                    <div className="w-10 h-10 rounded-xl bg-[#FF1F7E]/10 flex items-center justify-center text-[#FF1F7E] group-hover:bg-[#FF1F7E]/20 transition-colors duration-300">
+                      <Users size={20} />
+                    </div>
+                    <div>
+                      <h3 className="text-white font-sans font-bold text-base group-hover:text-[#FF1F7E] transition-colors duration-200">Player Management</h3>
+                      <p className="text-xs text-gray-400 font-sans">Manage your squad members, update roster names, & avatars</p>
+                    </div>
+                  </div>
+                  <ChevronRight size={18} className="text-gray-500 group-hover:text-[#FF1F7E] group-hover:translate-x-1 transition-all" />
+                </div>
+
+                {/* 3. App Settings */}
+                <div 
+                  onClick={() => setActiveSection('app_settings')}
+                  className="p-5 bg-gradient-to-r from-[#0D153B] to-[#121B48] border border-[#FF1F7E]/10 hover:border-[#FF1F7E]/30 rounded-2xl flex items-center justify-between cursor-pointer group transition-all duration-300 shadow-md hover:shadow-[#FF1F7E]/5"
+                >
+                  <div className="flex items-center gap-4">
+                    <div className="w-10 h-10 rounded-xl bg-orange-500/10 flex items-center justify-center text-orange-400 group-hover:bg-orange-500/25 transition-colors duration-300">
+                      <Settings size={20} />
+                    </div>
+                    <div>
+                      <h3 className="text-white font-sans font-bold text-base group-hover:text-[#FF1F7E] transition-colors duration-200">App Preferences</h3>
+                      <p className="text-xs text-gray-400 font-sans">Adjust display parameters, haptics, and audio sounds</p>
+                    </div>
+                  </div>
+                  <ChevronRight size={18} className="text-gray-500 group-hover:text-[#FF1F7E] group-hover:translate-x-1 transition-all" />
+                </div>
+
+                {/* 4. Match Settings */}
+                <div 
+                  onClick={() => setActiveSection('match_settings')}
+                  className="p-5 bg-gradient-to-r from-[#0D153B] to-[#121B48] border border-[#FF1F7E]/10 hover:border-[#FF1F7E]/30 rounded-2xl flex items-center justify-between cursor-pointer group transition-all duration-300 shadow-md hover:shadow-[#FF1F7E]/5"
+                >
+                  <div className="flex items-center gap-4">
+                    <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center text-blue-400 group-hover:bg-blue-500/25 transition-colors duration-300">
+                      <Flame size={20} />
+                    </div>
+                    <div>
+                      <h3 className="text-white font-sans font-bold text-base group-hover:text-[#FF1F7E] transition-colors duration-200">Match Settings</h3>
+                      <p className="text-xs text-gray-400 font-sans">Set default overs limits, team size, & scoreboard rules</p>
+                    </div>
+                  </div>
+                  <ChevronRight size={18} className="text-gray-500 group-hover:text-[#FF1F7E] group-hover:translate-x-1 transition-all" />
+                </div>
+
+                {/* 5. Advanced Settings */}
+                <div 
+                  onClick={() => setActiveSection('advanced_settings')}
+                  className="p-5 bg-gradient-to-r from-[#0D153B] to-[#121B48] border border-[#FF1F7E]/10 hover:border-[#FF1F7E]/30 rounded-2xl flex items-center justify-between cursor-pointer group transition-all duration-300 shadow-md hover:shadow-[#FF1F7E]/5"
+                >
+                  <div className="flex items-center gap-4">
+                    <div className="w-10 h-10 rounded-xl bg-red-500/10 flex items-center justify-center text-red-400 group-hover:bg-red-500/25 transition-colors duration-300">
+                      <Wrench size={20} />
+                    </div>
+                    <div>
+                      <h3 className="text-white font-sans font-bold text-base group-hover:text-[#FF1F7E] transition-colors duration-200">Advanced Settings</h3>
+                      <p className="text-xs text-gray-400 font-sans">Manage local caches, Firestore synchronization, & logs</p>
+                    </div>
+                  </div>
+                  <ChevronRight size={18} className="text-gray-500 group-hover:text-[#FF1F7E] group-hover:translate-x-1 transition-all" />
+                </div>
+              </div>
+            )}
+
+            {/* Back Navigation Bar */}
+            {activeSection !== 'menu' && (
+              <button 
+                onClick={() => setActiveSection('menu')}
+                className="inline-flex items-center gap-2 text-xs font-mono font-bold uppercase tracking-wider text-[#FF1F7E] hover:text-[#FF1F7E]/85 transition-colors border border-[#FF1F7E]/20 bg-[#FF1F7E]/5 px-4 py-2.5 rounded-xl cursor-pointer"
+              >
+                <ArrowLeft size={14} /> Back to Settings
+              </button>
+            )}
+
+            {/* Section Views */}
+            {activeSection === 'player_management' && (
+              <section className="space-y-6 animate-in fade-in duration-300">
+                <h2 className="text-lg font-mono uppercase tracking-widest flex items-center gap-2 text-white/90">
+                  <User size={18} className="text-[#FF1F7E]" /> Player Management
+                </h2>
+                
+                <div className="bg-white/[0.03] backdrop-blur-md border border-white/10 rounded-2xl p-6 shadow-xl space-y-4">
+                  <div className="space-y-2">
+                    <label htmlFor="newPlayerName" className="text-xs font-mono text-gray-400 uppercase tracking-wider block">
+                      Register New Player
+                    </label>
+                    <input 
+                      type="text"
+                      placeholder="Enter full name (e.g. Manish Sharma)"
+                      id="newPlayerName"
+                      className="w-full bg-black/25 border border-white/10 rounded-xl px-4 py-3 font-sans text-sm placeholder-[#FF1F7E]/40 focus:outline-none focus:border-[#FF1F7E]/50 text-white transition-all shadow-inner"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          const input = e.currentTarget;
+                          if (input.value.trim()) {
+                            addPlayer(input.value.trim());
+                            input.value = '';
+                          }
+                        }
+                      }}
+                    />
+                  </div>
+                  <button 
+                    onClick={() => {
+                      const input = document.getElementById('newPlayerName') as HTMLInputElement;
                       if (input.value.trim()) {
                         addPlayer(input.value.trim());
                         input.value = '';
                       }
-                    }
-                  }}
-                />
-                <button 
-                  onClick={() => {
-                    const input = document.getElementById('newPlayerName') as HTMLInputElement;
-                    if (input.value.trim()) {
-                      addPlayer(input.value.trim());
-                      input.value = '';
-                    }
-                  }}
-                  className="px-6 py-3 bg-[#FF1F7E] hover:opacity-90 text-white font-mono font-bold rounded-xl active:scale-95 transition-all shadow-lg shadow-pink-500/15 cursor-pointer"
-                >
-                  ADD
-                </button>
-              </div>
- 
-              <div className="space-y-3">
-                {players.map(p => (
-                  <div key={p.id} className="p-4 bg-[#0D153B] border border-[#FF1F7E]/10 rounded-xl flex items-center gap-4">
-                    <div className="relative group cursor-pointer" onClick={() => document.getElementById(`avatar-input-${p.id}`)?.click()}>
-                      <div className="w-12 h-12 rounded-full bg-white/10 border border-white/5 flex items-center justify-center overflow-hidden">
-                        {p.avatar ? (
-                          <img src={p.avatar} alt={p.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                        ) : (
-                          <User size={20} className="text-gray-500" />
-                        )}
-                      </div>
-                      <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center rounded-full transition-opacity">
-                        <Camera size={14} className="text-white" />
-                      </div>
-                      <input 
-                        type="file"
-                        id={`avatar-input-${p.id}`}
-                        className="hidden"
-                        accept="image/*"
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (file) {
-                            const reader = new FileReader();
-                            reader.onloadend = () => {
-                              updateAvatar(p.id, reader.result as string);
-                            };
-                            reader.readAsDataURL(file);
-                          }
-                        }}
-                      />
-                    </div>
-                    
-                    <div className="flex-1 flex justify-between items-center">
-                      <span className="text-white font-mono text-lg">{p.name}</span>
-                      <div className="flex items-center gap-2">
-                        <button 
-                          onClick={() => openEditModal('full', p.id)}
-                          className="p-2 bg-white/5 border border-white/10 rounded-lg text-orange-500 hover:bg-orange-500/10 transition-colors"
-                          title="Manage Player"
-                        >
-                          <Pencil size={14} />
-                        </button>
-                        <span className="text-[10px] font-mono text-gray-600">ID: {p.id}</span>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
-
-            {manualEditLogs.length > 0 && (
-              <section className="space-y-4">
-                <h2 className="text-xl font-mono uppercase tracking-widest flex items-center gap-2">
-                  <History size={20} className="text-blue-400" /> Career Edit Logs
-                </h2>
-                <div className="space-y-2 max-h-[400px] overflow-y-auto pr-2 scrollbar-thin">
-                  {manualEditLogs.slice().reverse().map(log => (
-                    <div key={log.id} className="p-4 bg-white/5 border border-white/10 rounded-xl font-mono text-[10px]">
-                      <div className="flex justify-between text-gray-500 mb-1">
-                        <span>{new Date(log.timestamp).toLocaleString()}</span>
-                        <span className="uppercase text-blue-400">{log.type}</span>
-                      </div>
-                      <p className="text-white">
-                        <span className="text-orange-500 font-bold">{log.playerName}</span>: 
-                        {log.field} changed from <span className="text-gray-400">{log.oldValue}</span> to 
-                        <span className="text-green-500"> {log.newValue}</span>
-                      </p>
-                    </div>
-                  ))}
-                  <button 
-                    onClick={() => {
-                      if(window.confirm("Clear all edit logs? This will not affect career stats.")) {
-                        setManualEditLogs([]);
-                      }
                     }}
-                    className="w-full py-2 text-[10px] uppercase font-mono text-gray-600 hover:text-red-500 transition-colors"
+                    className="w-full py-3 bg-[#FF1F7E] hover:bg-[#FF1F7E]/90 text-white font-mono font-bold text-xs uppercase tracking-widest rounded-xl hover:scale-[1.01] active:scale-[0.98] transition-all duration-200 shadow-md shadow-pink-500/10 cursor-pointer flex items-center justify-center gap-2"
                   >
-                    Clear Logs
+                    <Plus size={16} /> Add Member
                   </button>
                 </div>
+
+                <div className="space-y-3">
+                  {players.map(p => (
+                    <div key={p.id} className="p-4 bg-gradient-to-r from-[#0D153B] to-[#121B48] border border-[#FF1F7E]/10 hover:border-[#FF1F7E]/30 rounded-2xl flex items-center gap-4 transition-all duration-300 shadow-md group">
+                      <div className="relative cursor-pointer flex-shrink-0" onClick={() => document.getElementById(`avatar-input-${p.id}`)?.click()}>
+                        <div className="w-12 h-12 rounded-full bg-black/20 border-2 border-[#FF1F7E]/30 flex items-center justify-center overflow-hidden transition-all duration-300 group-hover:border-[#FF1F7E] shadow-lg">
+                          {p.avatar ? (
+                            <img src={p.avatar} alt={p.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          ) : (
+                            <User size={20} className="text-[#FF1F7E]/60 group-hover:text-[#FF1F7E] transition-colors" />
+                          )}
+                        </div>
+                        <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center rounded-full transition-all duration-300">
+                          <Camera size={14} className="text-white" />
+                        </div>
+                        <input 
+                          type="file"
+                          id={`avatar-input-${p.id}`}
+                          className="hidden"
+                          accept="image/*"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) {
+                              const reader = new FileReader();
+                              reader.onloadend = () => {
+                                updateAvatar(p.id, reader.result as string);
+                              };
+                              reader.readAsDataURL(file);
+                            }
+                          }}
+                        />
+                      </div>
+                      
+                      <div className="flex-1 flex justify-between items-center min-w-0">
+                        <div className="flex flex-col min-w-0">
+                          <span className="text-white font-sans font-bold text-base truncate group-hover:text-[#FF1F7E] transition-colors duration-200">{p.name}</span>
+                          <span className="text-[10px] font-mono text-gray-500 uppercase tracking-widest mt-0.5">ID: #{p.id}</span>
+                        </div>
+                        
+                        <div className="flex items-center gap-3">
+                          <button 
+                            onClick={() => openEditModal('full', p.id)}
+                            className="p-3 bg-white/5 hover:bg-[#FF1F7E]/10 border border-white/5 hover:border-[#FF1F7E]/30 rounded-xl text-orange-400 hover:text-orange-500 transition-all duration-200 active:scale-95 shadow-md animate-duration-300"
+                            title="Manage Player"
+                          >
+                            <Pencil size={15} />
+                          </button>
+                          <button 
+                            onClick={() => setDeleteConfirmPlayerId(p.id)}
+                            className="p-3 bg-white/5 hover:bg-red-500/10 border border-white/5 hover:border-red-500/30 rounded-xl text-red-100 hover:text-red-400 transition-all duration-200 active:scale-95 shadow-md"
+                            title="Delete Player"
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </section>
+            )}
+
+            {activeSection === 'user_profile' && (
+              <div className="bg-gradient-to-br from-[#0D153B] to-[#121B48] border border-white/10 rounded-2xl p-6 shadow-xl space-y-6 animate-in fade-in duration-300">
+                <div className="flex items-center gap-4">
+                  <div className="w-16 h-16 rounded-full bg-[#FF1F7E]/10 border-2 border-[#FF1F7E]/30 flex items-center justify-center overflow-hidden shadow-lg">
+                    {user?.photoURL ? (
+                      <img src={user.photoURL} alt={user.displayName || 'User'} className="w-full h-full object-cover" />
+                    ) : (
+                      <User size={32} className="text-[#FF1F7E]/80" />
+                    )}
+                  </div>
+                  <div>
+                    <h3 className="text-white font-sans font-bold text-lg">{user?.displayName || 'Guest Administrator'}</h3>
+                    <p className="text-xs text-gray-400 font-mono mt-0.5">{user?.email || 'OFFLINE GUEST SESSION'}</p>
+                  </div>
+                </div>
+
+                <div className="border-t border-white/5 pt-6 space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="bg-black/20 p-4 rounded-xl border border-white/5">
+                      <span className="text-[10px] font-mono text-gray-400 uppercase tracking-wider block">Database Storage</span>
+                      <span className="text-sm font-sans font-bold text-white mt-1 block">
+                        {user ? 'Cloud Firestore (Active)' : 'Local Storage Cache'}
+                      </span>
+                    </div>
+                    <div className="bg-black/20 p-4 rounded-xl border border-white/5">
+                      <span className="text-[10px] font-mono text-gray-400 uppercase tracking-wider block">Auth Provider</span>
+                      <span className="text-sm font-sans font-bold text-[#FF1F7E] mt-1 block uppercase font-mono tracking-wide text-xs">
+                        {user ? 'Google OAuth2' : 'Guest Sign-In'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {!user ? (
+                    <button 
+                      onClick={async () => {
+                        try {
+                          await signInWithPopup(auth, googleProvider);
+                        } catch (err) {
+                          console.error("Auth failed:", err);
+                        }
+                      }}
+                      className="w-full py-3 bg-[#FF1F7E] hover:bg-[#FF1F7E]/90 text-white font-mono font-bold text-xs uppercase tracking-widest rounded-xl transition-all shadow-md cursor-pointer flex items-center justify-center gap-2 border-none"
+                    >
+                      Connect Google Account
+                    </button>
+                  ) : (
+                    <button 
+                      onClick={() => signOut(auth)}
+                      className="w-full py-3 bg-red-600/10 hover:bg-red-600/20 border border-red-500/25 text-red-400 font-mono font-bold text-xs uppercase tracking-widest rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2"
+                    >
+                      Logout Session
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {activeSection === 'app_settings' && (
+              <div className="bg-gradient-to-br from-[#0D153B] to-[#121B48] border border-white/10 rounded-2xl p-6 shadow-xl space-y-6 animate-in fade-in duration-300">
+                <h3 className="text-lg font-mono font-bold text-white uppercase tracking-wider">App Preferences</h3>
+                
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between p-4 bg-black/20 rounded-xl border border-white/5">
+                    <div>
+                      <span className="text-sm font-sans font-bold text-white block">Acoustic Audio FX</span>
+                      <span className="text-xs text-gray-400 block">Play sound effects on runs, boundaries & wickets</span>
+                    </div>
+                    <div className="w-12 h-6 bg-[#FF1F7E] rounded-full p-0.5 cursor-pointer flex items-center justify-end transition-all">
+                      <div className="w-5 h-5 bg-white rounded-full shadow-md"></div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between p-4 bg-black/20 rounded-xl border border-white/5">
+                    <div>
+                      <span className="text-sm font-sans font-bold text-white block">Haptic Force Vibration</span>
+                      <span className="text-xs text-gray-400 block">Trigger gentle pulse feedback on click actions</span>
+                    </div>
+                    <div className="w-12 h-6 bg-[#FF1F7E] rounded-full p-0.5 cursor-pointer flex items-center justify-end transition-all">
+                      <div className="w-5 h-5 bg-white rounded-full shadow-md"></div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between p-4 bg-black/20 rounded-xl border border-white/5">
+                    <div>
+                      <span className="text-sm font-sans font-bold text-white block">Real-time Cloud Sync</span>
+                      <span className="text-xs text-gray-400 block">Push player stats and career updates immediately</span>
+                    </div>
+                    <div className="w-12 h-6 bg-[#FF1F7E] rounded-full p-0.5 cursor-pointer flex items-center justify-end transition-all">
+                      <div className="w-5 h-5 bg-white rounded-full shadow-md"></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activeSection === 'match_settings' && (
+              <div className="bg-gradient-to-br from-[#0D153B] to-[#121B48] border border-white/10 rounded-2xl p-6 shadow-xl space-y-6 animate-in fade-in duration-300">
+                <h3 className="text-lg font-mono font-bold text-white uppercase tracking-wider">Match Regulations</h3>
+                
+                <div className="space-y-4">
+                  <div className="p-4 bg-black/20 rounded-xl border border-white/5 flex justify-between items-center">
+                    <div>
+                      <span className="text-sm font-sans font-bold text-white block">Overs Regulation</span>
+                      <span className="text-xs text-gray-400 block">Maximum ball delivery limit per over</span>
+                    </div>
+                    <span className="px-3 py-1.5 bg-white/5 border border-white/10 rounded-lg text-sm font-mono text-[#FF1F7E] font-bold">
+                      6 Balls / Over
+                    </span>
+                  </div>
+
+                  <div className="p-4 bg-black/20 rounded-xl border border-white/5 flex justify-between items-center">
+                    <div>
+                      <span className="text-sm font-sans font-bold text-white block">Extra Penalization</span>
+                      <span className="text-xs text-gray-400 block">Wide & No Ball run penalty for bowler in overs</span>
+                    </div>
+                    <span className="px-3 py-1.5 bg-white/5 border border-white/10 rounded-lg text-sm font-mono text-[#FF1F7E] font-bold">
+                      +1 Run Penalty
+                    </span>
+                  </div>
+
+                  <div className="p-4 bg-black/20 rounded-xl border border-white/5 flex justify-between items-center">
+                    <div>
+                      <span className="text-sm font-sans font-bold text-white block">Default Players Size</span>
+                      <span className="text-xs text-gray-400 block">Standard active playing squad headcount</span>
+                    </div>
+                    <span className="px-3 py-1.5 bg-white/5 border border-white/10 rounded-lg text-sm font-mono text-[#FF1F7E] font-bold">
+                      11 Players
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activeSection === 'advanced_settings' && (
+              <div className="bg-gradient-to-br from-[#0D153B] to-[#121B48] border border-white/10 rounded-2xl p-6 shadow-xl space-y-6 animate-in fade-in duration-300">
+                <h3 className="text-lg font-mono font-bold text-white uppercase tracking-wider">Administration Tools</h3>
+                
+                {manualEditLogs.length > 0 && (
+                  <div className="space-y-4">
+                    <h2 className="text-base font-mono uppercase tracking-widest flex items-center gap-2 text-white">
+                      <History size={16} className="text-blue-400" /> Career Edit Logs
+                    </h2>
+                    <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2 scrollbar-thin">
+                      {manualEditLogs.slice().reverse().map(log => (
+                        <div key={log.id} className="p-4 bg-black/35 border border-white/10 rounded-xl font-mono text-[10px]">
+                          <div className="flex justify-between text-gray-500 mb-1">
+                            <span>{new Date(log.timestamp).toLocaleString()}</span>
+                            <span className="uppercase text-blue-400">{log.type}</span>
+                          </div>
+                          <p className="text-white">
+                            <span className="text-orange-400 font-bold">{log.playerName}</span>: 
+                            {log.field} changed from <span className="text-gray-400">{log.oldValue}</span> to 
+                            <span className="text-green-500"> {log.newValue}</span>
+                          </p>
+                        </div>
+                      ))}
+                      <button 
+                        onClick={() => {
+                          if(window.confirm("Clear all edit logs? This will not affect career stats.")) {
+                            setManualEditLogs([]);
+                          }
+                        }}
+                        className="w-full py-3 bg-red-600/10 hover:bg-red-600/20 border border-red-500/25 text-red-400 font-mono font-bold text-xs uppercase tracking-widest rounded-xl transition-all cursor-pointer"
+                      >
+                        Clear Logs
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="border-t border-white/5 pt-6 space-y-4">
+                  <div className="p-4 bg-red-500/5 rounded-xl border border-red-500/10">
+                    <span className="text-sm font-sans font-bold text-red-400 block">System Reset</span>
+                    <p className="text-gray-400 text-xs mt-1 leading-relaxed">
+                      Resets default team registers and wipes local browser cached configurations. This is irreversible.
+                    </p>
+                    <button 
+                      onClick={() => {
+                        if (window.confirm("Are you absolutely sure you want to completely clear local storage and start fresh? All player registries and matches will be flushed!")) {
+                          localStorage.clear();
+                          window.location.reload();
+                        }
+                      }}
+                      className="mt-4 px-4 py-2 bg-red-600/10 hover:bg-red-600/20 border border-red-500/25 text-red-400 font-mono font-bold text-xs uppercase tracking-widest rounded-xl transition-all cursor-pointer"
+                    >
+                      Factory Reset Data
+                    </button>
+                  </div>
+                </div>
+              </div>
             )}
           </div>
         )}
@@ -3949,6 +4780,44 @@ export default function App() {
 
       {/* Modals */}
       <AnimatePresence>
+        {deleteConfirmPlayerId !== null && (
+          <div className="fixed inset-0 bg-black/95 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-[#0D153B] border border-red-500/25 p-8 rounded-3xl w-full max-w-sm shadow-2xl shadow-black/80"
+            >
+              <div className="flex items-center gap-3 mb-4 text-red-500">
+                <AlertCircle size={28} />
+                <h2 className="text-xl font-sans font-bold text-white">Delete Player?</h2>
+              </div>
+              <p className="text-gray-300 font-sans text-sm mb-6 leading-relaxed">
+                Are you sure you want to permanently delete <span className="font-bold text-[#FF1F7E]">{players.find(p => p.id === deleteConfirmPlayerId)?.name}</span> and all their career stats?
+              </p>
+              
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setDeleteConfirmPlayerId(null)}
+                  className="flex-1 py-3 bg-white/5 hover:bg-white/10 active:scale-95 border border-white/5 rounded-xl font-sans text-sm font-bold text-gray-300 transition-all cursor-pointer text-center"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    if (deleteConfirmPlayerId !== null) {
+                      handleDeletePlayerConfirmed(deleteConfirmPlayerId);
+                    }
+                  }}
+                  className="flex-1 py-3 bg-red-600 hover:bg-red-500 active:scale-95 text-white font-sans text-sm font-bold rounded-xl transition-all shadow-md shadow-red-900/30 cursor-pointer text-center"
+                >
+                  Delete
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
         {extraModal.isOpen && (
           <div className="fixed inset-0 bg-black/95 backdrop-blur-md z-[110] flex items-center justify-center p-4">
             <motion.div 
@@ -4123,17 +4992,36 @@ export default function App() {
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
               className="bg-[#0D153B] border border-[#FF1F7E]/25 p-8 rounded-3xl w-full max-w-md shadow-2xl shadow-black/80"
+              id="fielder-selection-modal"
             >
               <div className="flex items-center gap-3 mb-4 text-red-500">
                 <User size={28} />
                 <h2 className="text-2xl font-mono uppercase tracking-tighter">
-                  {isFielderModalOpen.type === 'Catch' ? 'Select Fielder' : 'Select Wicketkeeper'}
+                  {isFielderModalOpen.type === 'Catch' 
+                    ? 'Select Fielder' 
+                    : (isFielderModalOpen.type === 'RunOut' 
+                        ? 'Who threw the ball?' 
+                        : (isFielderModalOpen.type === 'Misfield' 
+                            ? (selectedMisfieldType ? `Select Fielder (${selectedMisfieldType})` : 'Select Fielder') 
+                            : 'Select Wicketkeeper'
+                          )
+                      )
+                  }
                 </h2>
               </div>
               <p className="text-gray-400 font-mono text-xs mb-6 uppercase tracking-widest leading-relaxed">
                 {isFielderModalOpen.type === 'Catch' 
                   ? `Who took the catch to dismiss ${players.find(p => p.id === isFielderModalOpen.outPlayerId)?.name}?`
-                  : `Who made the stumping to dismiss ${players.find(p => p.id === isFielderModalOpen.outPlayerId)?.name}?`
+                  : (isFielderModalOpen.type === 'RunOut'
+                    ? `Who threw the ball to run out ${players.find(p => p.id === isFielderModalOpen.outPlayerId)?.name}?`
+                    : (isFielderModalOpen.type === 'Misfield'
+                      ? (selectedMisfieldType 
+                          ? `Select the fielder responsible for the ${selectedMisfieldType.toLowerCase()}:` 
+                          : "Select the fielder who misfielded:"
+                        )
+                      : `Who made the stumping to dismiss ${players.find(p => p.id === isFielderModalOpen.outPlayerId)?.name}?`
+                    )
+                  )
                 }
               </p>
               <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 scrollbar-thin">
@@ -4143,12 +5031,14 @@ export default function App() {
                     <button
                       key={p.id}
                       onClick={() => {
-                        if (isFielderModalOpen.outPlayerId !== null) {
-                          if (isFielderModalOpen.type === 'Catch') {
-                            confirmCatch(isFielderModalOpen.outPlayerId, p.id);
-                          } else {
-                            confirmStumping(isFielderModalOpen.outPlayerId, p.id);
-                          }
+                        if (isFielderModalOpen.type === 'Catch' && isFielderModalOpen.outPlayerId !== null) {
+                          confirmCatch(isFielderModalOpen.outPlayerId, p.id);
+                        } else if (isFielderModalOpen.type === 'RunOut' && isFielderModalOpen.outPlayerId !== null) {
+                          confirmRunOutWithFielder(isFielderModalOpen.outPlayerId, isFielderModalOpen.runsCompleted ?? 0, p.id);
+                        } else if (isFielderModalOpen.type === 'Misfield') {
+                          confirmMisfield(p.id, selectedMisfieldType || undefined);
+                        } else if (isFielderModalOpen.outPlayerId !== null) {
+                          confirmStumping(isFielderModalOpen.outPlayerId, p.id);
                         }
                       }}
                       className="w-full p-4 bg-white/5 hover:bg-white/10 border border-white/5 rounded-2xl font-mono text-left transition-all flex items-center justify-between group"
@@ -4168,7 +5058,22 @@ export default function App() {
                           <p className="text-[10px] text-gray-500 uppercase">
                             {isFielderModalOpen.type === 'Catch' 
                               ? `Catches: ${getPlayerStats(p.id).catches || 0}`
-                              : `Stumpings: ${getPlayerStats(p.id).stumpings || 0}`
+                              : (isFielderModalOpen.type === 'RunOut'
+                                ? `Run Outs: ${getPlayerStats(p.id).throwComplete || getPlayerStats(p.id).runOuts || 0}`
+                                : (isFielderModalOpen.type === 'Misfield'
+                                  ? (selectedMisfieldType === 'Catch Drop'
+                                      ? `Catches Dropped: ${getPlayerStats(p.id).catchDrop || 0}`
+                                      : (selectedMisfieldType === 'Over Throw'
+                                          ? `Over Throws: ${getPlayerStats(p.id).overThrow || 0}`
+                                          : (selectedMisfieldType === 'Missed Throw'
+                                              ? `Missed Throws: ${getPlayerStats(p.id).missedThrows || 0}`
+                                              : `Misfields: ${getPlayerStats(p.id).missField || 0}`
+                                            )
+                                        )
+                                    )
+                                  : `Stumpings: ${getPlayerStats(p.id).stumpings || 0}`
+                                )
+                              )
                             }
                           </p>
                         </div>
@@ -4178,7 +5083,111 @@ export default function App() {
                   ))}
               </div>
               <button
-                onClick={() => setIsFielderModalOpen({ isOpen: false, outPlayerId: null })}
+                onClick={() => {
+                  setIsFielderModalOpen({ isOpen: false, outPlayerId: null });
+                  setSelectedMisfieldType(null);
+                }}
+                className="w-full mt-6 py-3 border border-white/10 hover:bg-white/5 rounded-xl font-mono text-xs text-gray-400 uppercase tracking-widest transition-all"
+              >
+                Cancel
+              </button>
+            </motion.div>
+          </div>
+        )}
+
+        {isMisfieldTypeModalOpen && (
+          <div className="fixed inset-0 bg-black/95 backdrop-blur-md z-[115] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-[#0D153B] border border-amber-500/30 p-8 rounded-3xl w-full max-w-sm shadow-2xl shadow-black/80"
+              id="misfield-type-modal"
+            >
+              <div className="flex items-center gap-3 mb-4 text-amber-500">
+                <AlertCircle size={28} />
+                <h2 className="text-xl font-mono uppercase tracking-tighter">Select Misfield Type</h2>
+              </div>
+              <p className="text-gray-400 font-mono text-xs mb-6 uppercase tracking-widest leading-relaxed">
+                Choose the specific type of fielding error to record:
+              </p>
+              
+              <div className="space-y-3">
+                <button
+                  id="btn-catch-drop"
+                  onClick={() => {
+                    setSelectedMisfieldType('Catch Drop');
+                    setIsMisfieldTypeModalOpen(false);
+                    setIsFielderModalOpen({
+                      isOpen: true,
+                      outPlayerId: null,
+                      type: 'Misfield'
+                    });
+                  }}
+                  className="w-full p-4 bg-white/5 hover:bg-red-500/20 hover:text-white border border-white/5 rounded-2xl font-mono text-left transition-all flex items-center justify-between group active:scale-95"
+                >
+                  <span className="text-white text-sm font-bold uppercase tracking-wider">👐 Catch Drop</span>
+                  <ChevronRight size={18} className="text-gray-500 group-hover:text-white transition-all transform group-hover:translate-x-1" />
+                </button>
+
+                <button
+                  id="btn-over-throw"
+                  onClick={() => {
+                    setSelectedMisfieldType('Over Throw');
+                    setIsMisfieldTypeModalOpen(false);
+                    setIsFielderModalOpen({
+                      isOpen: true,
+                      outPlayerId: null,
+                      type: 'Misfield'
+                    });
+                  }}
+                  className="w-full p-4 bg-white/5 hover:bg-orange-500/20 hover:text-white border border-white/5 rounded-2xl font-mono text-left transition-all flex items-center justify-between group active:scale-95"
+                >
+                  <span className="text-white text-sm font-bold uppercase tracking-wider">🚀 Over Throw</span>
+                  <ChevronRight size={18} className="text-gray-500 group-hover:text-white transition-all transform group-hover:translate-x-1" />
+                </button>
+
+                <button
+                  id="btn-missed-throw"
+                  onClick={() => {
+                    setSelectedMisfieldType('Missed Throw');
+                    setIsMisfieldTypeModalOpen(false);
+                    setIsFielderModalOpen({
+                      isOpen: true,
+                      outPlayerId: null,
+                      type: 'Misfield'
+                    });
+                  }}
+                  className="w-full p-4 bg-white/5 hover:bg-blue-500/20 hover:text-white border border-white/5 rounded-2xl font-mono text-left transition-all flex items-center justify-between group active:scale-95"
+                >
+                  <span className="text-white text-sm font-bold uppercase tracking-wider">🎯 Missed Throw</span>
+                  <ChevronRight size={18} className="text-gray-500 group-hover:text-white transition-all transform group-hover:translate-x-1" />
+                </button>
+
+                <button
+                  id="btn-misfield-general"
+                  onClick={() => {
+                    setSelectedMisfieldType('Misfield');
+                    setIsMisfieldTypeModalOpen(false);
+                    setIsFielderModalOpen({
+                      isOpen: true,
+                      outPlayerId: null,
+                      type: 'Misfield'
+                    });
+                  }}
+                  className="w-full p-4 bg-white/5 hover:bg-amber-500/20 hover:text-white border border-white/5 rounded-2xl font-mono text-left transition-all flex items-center justify-between group active:scale-95"
+                >
+                  <span className="text-white text-sm font-bold uppercase tracking-wider">⚠️ Misfield</span>
+                  <ChevronRight size={18} className="text-gray-500 group-hover:text-white transition-all transform group-hover:translate-x-1" />
+                </button>
+              </div>
+
+              <button
+                id="btn-cancel-misfield-type"
+                onClick={() => {
+                  setIsMisfieldTypeModalOpen(false);
+                  setSelectedMisfieldType(null);
+                }}
                 className="w-full mt-6 py-3 border border-white/10 hover:bg-white/5 rounded-xl font-mono text-xs text-gray-400 uppercase tracking-widest transition-all"
               >
                 Cancel
@@ -4209,7 +5218,13 @@ export default function App() {
                       key={runs}
                       onClick={() => {
                         if (runOutModal.outPlayerId !== null) {
-                          confirmRunOut(runOutModal.outPlayerId, runs);
+                          setRunOutModal({ isOpen: false, outPlayerId: null });
+                          setIsFielderModalOpen({
+                            isOpen: true,
+                            outPlayerId: runOutModal.outPlayerId,
+                            type: 'RunOut',
+                            runsCompleted: runs
+                          });
                         }
                       }}
                       className="h-14 bg-white/5 hover:bg-[#FF1F7E]/20 active:scale-95 border border-white/5 hover:border-[#FF1F7E]/30 rounded-xl font-mono text-lg font-bold text-white transition-all flex items-center justify-center"
